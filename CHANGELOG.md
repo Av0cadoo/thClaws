@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] — 2026-04-26
+
+Feature release rolling up image attachment across providers, chat UI
+polish, and a community-PR sweep that ran `pnpm lint` to clean. Plus
+a transitive postcss XSS patch and a docs-prerequisite correction.
+
+### Added
+
+- **Image attachment across providers.** The Read tool now returns
+  inline images for vision-capable models (PNG/JPG/GIF/WebP). Wire
+  shaping is per-provider:
+  - **Anthropic** — native via serde, zero provider code.
+  - **OpenAI** — synthetic user message with `image_url` blocks
+    referencing the originating `tool_call_id` (their tool-role
+    messages can't carry images).
+  - **Gemini** — `inlineData` parts as siblings to `functionResponse`
+    in the same content.
+  - **Ollama / OpenAI Responses** — text-only flatten on wire (no
+    pixels to model).
+- **ChatView attachments.** Paste and drag-drop image files into the
+  chat composer; thumbnails preview before send.
+
+### Changed
+
+- **Chat rendering.** Assistant turns render as markdown
+  (headings/lists/code/tables) instead of raw text. Tool output
+  collapses to compact one-line indicators by default, with errors
+  always shown in full.
+- **Tool result handling on history restore.** `tool_result` blocks
+  are dropped on session reload; `tool_use` rendering is unified
+  across the streaming and reload paths.
+
+### Fixed
+
+- **postcss 8.5.9 → 8.5.10** ([GHSA-qx2v-qp2m-jg93](https://github.com/advisories/GHSA-qx2v-qp2m-jg93)).
+  Transitive frontend dep; thClaws ships pre-compiled Tailwind so
+  runtime exposure was minimal but Dependabot was flagging.
+- **Documented Rust prerequisite: 1.78 → 1.85** in user-manual.
+  The `home` crate v0.5.12 (transitive) needs edition 2024, so the
+  effective MSRV moved to 1.85. README + CONTRIBUTING were already
+  updated in [#3](https://github.com/thClaws/thClaws/pull/3); this
+  catches the user-manual files that PR missed.
+- **Read tool: image format sniffing from magic bytes** instead of
+  trusting file extensions (which lie often enough — `.jpg` files
+  that are actually PNGs, etc.).
+- **OpenAI batched tool messages.** Emit batched tool messages
+  back-to-back with a single combined image follow-up, instead of
+  interleaving.
+- **Sidebar.tsx unreachable branch.** Duplicate `sessions_list`
+  `else if` removed (#4).
+- **Frontend lint sweep** by [@parintorns](https://github.com/parintorns)
+  in #4, #6, #7, #8, #9, #10 — `react-hooks/exhaustive-deps`,
+  `react-refresh/only-export-components`, `no-empty`, type safety
+  in IPC bridge and TeamView. `pnpm lint` is now clean.
+- **`.gitignore`: `.thclaws/sessions/` → `.thclaws/`.** Was leaking
+  `team/`, `settings.json`, and similar runtime files into
+  `git status` (#6).
+
+### Infrastructure
+
+- **Workspace `Cargo.toml` at repo root** by
+  [@bombman](https://github.com/bombman) (#2). `cargo build` now
+  works from the repo root as the README documents; build output
+  is at `target/release/` instead of `crates/core/target/release/`.
+
 ## [0.3.2] — 2026-04-25
 
 Patch release fixing two GUI startup-recovery bugs surfaced in the
