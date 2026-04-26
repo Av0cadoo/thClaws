@@ -119,6 +119,15 @@ export function TerminalView({ active }: Props) {
     // what they're typing while the agent is silent (the shared session
     // doesn't echo back — it just executes lines).
     let lineBuffer = "";
+    // Index into `lineBuffer` where the next character would be
+    // inserted. 0 = before first char, lineBuffer.length = after last
+    // char (the standard "end of line" position). Left/Right arrows,
+    // Home/End, and Ctrl+A/E move this; insert / backspace mutate
+    // around it. Reset to 0 whenever the buffer is cleared, and to
+    // `next.length` whenever we replace the whole buffer (history
+    // recall, slash accept, etc.) so the caret lands at the end of the
+    // restored text.
+    let cursorPos = 0;
     // True when the prompt (`❯ `) is the current visible line and any
     // incoming `terminal_data` should erase it before writing event
     // content. False once we're inside a turn's event stream — at
@@ -138,11 +147,22 @@ export function TerminalView({ active }: Props) {
     // instead of clearing the line unexpectedly.
     let savedDraft = "";
 
-    const replaceLineBuffer = (next: string) => {
+    // Erase the current line and rewrite "❯ <lineBuffer>", then move
+    // the visible cursor back to `cursorPos`. Called after any mid-line
+    // mutation so the screen stays in sync with the buffer + caret.
+    // Cheap enough to do on every keystroke since lines are short.
+    const redrawLine = () => {
       term.write("\x1b[2K\r");
       writePrompt();
+      if (lineBuffer.length > 0) term.write(lineBuffer);
+      const back = lineBuffer.length - cursorPos;
+      if (back > 0) term.write(`\x1b[${back}D`);
+    };
+
+    const replaceLineBuffer = (next: string) => {
       lineBuffer = next;
-      if (next.length > 0) term.write(next);
+      cursorPos = next.length;
+      redrawLine();
       recomputeSlash();
     };
 
@@ -277,6 +297,7 @@ export function TerminalView({ active }: Props) {
         if (lineBuffer.length > 0) {
           term.write("\x1b[2K\r");
           lineBuffer = "";
+          cursorPos = 0;
           writePrompt(); // also flips promptShowing back on
           recomputeSlash();
         } else {
@@ -292,8 +313,10 @@ export function TerminalView({ active }: Props) {
         (e.key === "l" || e.key === "L")
       ) {
         term.write("\x1b[2J\x1b[H");
-        writePrompt();
-        term.write(lineBuffer);
+        // redrawLine writes the prompt, the buffer, and re-positions
+        // the caret — handles the case where the user cleared screen
+        // mid-edit (cursorPos < lineBuffer.length).
+        redrawLine();
         return false;
       }
 
@@ -352,11 +375,17 @@ export function TerminalView({ active }: Props) {
                   send({ type: "shell_input", text: trimmed });
                 }
               } else {
-                // Single-line paste: insert into the line buffer and
-                // echo so the user can keep editing before hitting
-                // Enter.
-                lineBuffer += text;
-                term.write(text);
+                // Single-line paste: insert at the current caret
+                // position so pasting into the middle of an in-progress
+                // edit works the same as typing there. After the
+                // buffer change, recompute the slash-popup state in
+                // case the paste extended a `/<word>` query.
+                lineBuffer =
+                  lineBuffer.slice(0, cursorPos) +
+                  text +
+                  lineBuffer.slice(cursorPos);
+                cursorPos += text.length;
+                redrawLine();
                 recomputeSlash();
               }
             }
@@ -398,6 +427,50 @@ export function TerminalView({ active }: Props) {
         }
         return;
       }
+      // Left / Right arrows: walk the caret one column. We forward the
+      // same escape sequence to xterm so the visible cursor moves —
+      // we just track the new logical position so subsequent inserts /
+      // deletes know where to act.
+      if (data === "\x1b[D") {
+        if (cursorPos > 0) {
+          cursorPos -= 1;
+          term.write("\x1b[D");
+        }
+        return;
+      }
+      if (data === "\x1b[C") {
+        if (cursorPos < lineBuffer.length) {
+          cursorPos += 1;
+          term.write("\x1b[C");
+        }
+        return;
+      }
+      // Home / End: jump caret to start / end of line. xterm sends one
+      // of two encodings depending on application-keypad mode (`\x1bO*`
+      // vs `\x1b[*~`); accept both. Ctrl-A / Ctrl-E are the readline
+      // equivalents — surfaced here as plain control bytes (`\x01`,
+      // `\x05`) which would otherwise be dropped by the control-byte
+      // filter below.
+      if (
+        data === "\x1bOH" || data === "\x1b[H" || data === "\x1b[1~" ||
+        data === "\x01"
+      ) {
+        if (cursorPos > 0) {
+          cursorPos = 0;
+          redrawLine();
+        }
+        return;
+      }
+      if (
+        data === "\x1bOF" || data === "\x1b[F" || data === "\x1b[4~" ||
+        data === "\x05"
+      ) {
+        if (cursorPos < lineBuffer.length) {
+          cursorPos = lineBuffer.length;
+          redrawLine();
+        }
+        return;
+      }
       // Any other keystroke counts as "editing the current draft" so
       // further Up/Down starts from a clean slate relative to that.
       if (historyIndex !== -1) {
@@ -415,6 +488,7 @@ export function TerminalView({ active }: Props) {
         const combined = (lineBuffer + data).replace(/\r\n/g, "\n");
         const trimmed = combined.replace(/\n+$/, "");
         lineBuffer = "";
+        cursorPos = 0;
         if (trimmed.length > 0) {
           // Erase whatever the user had locally echoed — the canonical
           // UserPrompt event from the shared session will re-render
@@ -432,6 +506,7 @@ export function TerminalView({ active }: Props) {
 
       // xterm hands us each keystroke as a string; classify and either
       // mutate the buffer + echo, or submit on Enter.
+      let needsRedraw = false;
       let bufferMutated = false;
       for (const ch of data) {
         if (ch === "\r" || ch === "\n") {
@@ -449,21 +524,46 @@ export function TerminalView({ active }: Props) {
             writePrompt();
           }
           lineBuffer = "";
+          cursorPos = 0;
+          needsRedraw = false;
           bufferMutated = true;
         } else if (ch === "\x7f" || ch === "\b") {
-          if (lineBuffer.length > 0) {
-            lineBuffer = lineBuffer.slice(0, -1);
-            // Move cursor back, overwrite with space, move back again.
-            term.write("\b \b");
+          // Backspace deletes the char *before* the caret. At end of
+          // line we can use the cheap `\b \b` trick; mid-line we have
+          // to redraw because the tail shifts left.
+          if (cursorPos > 0) {
+            const atEnd = cursorPos === lineBuffer.length;
+            lineBuffer =
+              lineBuffer.slice(0, cursorPos - 1) + lineBuffer.slice(cursorPos);
+            cursorPos -= 1;
+            if (atEnd) {
+              term.write("\b \b");
+            } else {
+              needsRedraw = true;
+            }
             bufferMutated = true;
           }
         } else if (ch >= " " && ch !== "\x7f") {
-          lineBuffer += ch;
-          term.write(ch);
+          // Insert at caret. End-of-line is the fast path (just echo);
+          // mid-line requires a redraw so the existing tail shifts
+          // right and the caret lands one column further along.
+          const atEnd = cursorPos === lineBuffer.length;
+          lineBuffer =
+            lineBuffer.slice(0, cursorPos) + ch + lineBuffer.slice(cursorPos);
+          cursorPos += 1;
+          if (atEnd) {
+            term.write(ch);
+          } else {
+            needsRedraw = true;
+          }
           bufferMutated = true;
         }
         // Other control bytes are dropped.
       }
+      if (needsRedraw) redrawLine();
+      // Slash-popup state must follow buffer mutations regardless of
+      // whether the visible line redrew (end-of-line edits use the
+      // fast `\b \b` / direct echo path but still change the buffer).
       if (bufferMutated) recomputeSlash();
     });
 
