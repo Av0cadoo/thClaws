@@ -7,6 +7,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] — 2026-04-26
+
+Same-day hardening patch following an internal security audit of v0.3.3.
+No new features; all changes are defensive limits and clearer errors on
+the image-attachment and terminal-paste paths.
+
+### Added
+
+- **Inline error feedback on image attachment.** Pasting or dropping an
+  unsupported image type or an image larger than 10 MB now shows a
+  short auto-clearing banner ("Image too large: 17.3 MB (max 10 MB)")
+  instead of silently dropping. Same path covers
+  `image/svg+xml`/etc. → "Unsupported image type".
+
+### Changed
+
+- **Read tool errors cleanly on wrong-extension image files.** Files
+  like `screenshot.png` containing non-PNG bytes used to slip through
+  with a guessed MIME and get rejected by the provider with an opaque
+  400. They now fail at Read with a pointed error message
+  ("bytes don't match any supported image format despite extension
+  claiming image/png — file may be corrupted, encrypted, or saved
+  with the wrong extension"). Real images with these extensions are
+  unaffected.
+
+### Fixed (security hardening)
+
+- **ChatView image paste/drop:** 10 MB per-attachment cap. Above the
+  cap, the image is rejected with a visible error rather than ballooning
+  the IPC payload and freezing the UI during base64 encoding.
+- **TerminalView clipboard paste:** 1 MB cap. Multi-MB pastes used to
+  freeze the main thread during synchronous `atob()` + `TextDecoder`;
+  oversized pastes are now dropped with a console warning.
+- **Backend IPC `chat_user_message` attachment array:**
+  `MAX_ATTACHMENTS_PER_MESSAGE = 10` and a 67 MB combined-base64 cap.
+  Defense-in-depth against a malicious or buggy frontend bypassing
+  the per-image cap; worst-case payload now bounded at ~50 MB raw
+  per message rather than unbounded.
+- **`TeamView.tsx` `ansiToHtml`:** documented the escape-first
+  invariant in a JSDoc block. The function's output is consumed via
+  `dangerouslySetInnerHTML`; preserving HTML-escape-before-tag-build
+  ordering is what keeps it safe. Block lists three changes to NOT
+  make.
+- **Markdown rendering threat-model comment** added at the
+  `ReactMarkdown` call site documenting that `msg.content` is
+  untrusted model output and the configured plugin chain
+  (`remark-gfm`, `rehype-highlight`) is intentionally the safe stack
+  — no `allowDangerousHtml`, no `rehype-raw`.
+
+### CI / Infrastructure
+
+- **Workflow least-privilege.** `ci.yml` now declares an explicit
+  top-level `permissions: contents: read, actions: read`, instead of
+  inheriting the GITHUB_TOKEN's default write scope. Closes 4
+  CodeQL alerts (`actions/missing-workflow-permissions`).
+- **CodeQL Rust scan** actually runs now: added `libdbus-1-dev` +
+  `pkg-config` install before `cargo build`. The keychain crate's
+  transitive `libdbus-sys` was failing pkg_config detection, breaking
+  every prior CodeQL Rust run before extraction even started.
+- **Node 24 actions runtime opt-in** via
+  `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true` on both `release.yml`
+  and `ci.yml`. Surfaces any action-runtime breakage on our schedule
+  rather than at GitHub's 2026-06-02 forced cutover.
+
+### Known issues — acknowledged but deferred
+
+- Copy-button surface on chat bubbles (system/tool/assistant) doesn't
+  warn or filter when copying messages that may contain previously-
+  pasted secrets. Needs a design choice (toast confirmation vs.
+  scope restriction vs. pattern-based redaction); deferred to v0.3.5.
+- IPC message types are still stringly-typed; discriminated-union
+  refactor queued for a future maintenance pass.
+- Transitive `glib` 0.18.5 / gtk-rs 0.18.x unmaintained warnings
+  (12 RustSec entries) remain pending the upstream `wry`/`webkit2gtk`
+  GTK4 migration.
+
 ## [0.3.3] — 2026-04-26
 
 Feature release rolling up image attachment across providers, chat UI
