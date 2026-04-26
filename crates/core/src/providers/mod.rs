@@ -112,10 +112,7 @@ impl ProviderKind {
     /// backends like Ollama and LMStudio are surfaced for editing. The env
     /// var still overrides at startup for power users who need it.
     pub fn endpoint_user_configurable(&self) -> bool {
-        matches!(
-            self,
-            Self::Ollama | Self::OllamaAnthropic | Self::LMStudio,
-        )
+        matches!(self, Self::Ollama | Self::OllamaAnthropic | Self::LMStudio,)
     }
 
     /// Default base URL shown as a placeholder in the Settings UI when the
