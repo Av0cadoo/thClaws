@@ -87,6 +87,13 @@ impl ProviderKind {
             Self::OpenAI => "gpt-4o",
             Self::OpenAIResponses => "codex/gpt-5.2-codex",
             Self::OpenRouter => "openrouter/anthropic/claude-sonnet-4-6",
+            // Pinned to a versioned ID (matching Anthropic / OpenAI
+            // convention) rather than `gemini-flash-latest` — `-latest`
+            // is a rolling Google-side alias that could promote into a
+            // higher-tier model without warning, surprising users with
+            // unexpected cost. Track upcoming retirement at:
+            // https://ai.google.dev/gemini-api/docs/deprecations
+            // Next bump deadline: 2026-06-17 (gemini-2.5-flash shutdown).
             Self::Gemini => "gemini-2.5-flash",
             Self::Ollama => "ollama/llama3.2",
             Self::OllamaAnthropic => "oa/qwen3-coder",

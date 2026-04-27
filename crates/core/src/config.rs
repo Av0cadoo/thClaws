@@ -748,7 +748,7 @@ mod tests {
         assert_eq!(c.detect_provider().unwrap(), "openai");
         c.model = "ollama/llama3.2".into();
         assert_eq!(c.detect_provider().unwrap(), "ollama");
-        c.model = "gemini-2.0-flash".into();
+        c.model = "gemini-2.5-flash".into();
         assert_eq!(c.detect_provider().unwrap(), "gemini");
     }
 
