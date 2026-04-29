@@ -52,7 +52,7 @@ impl Tool for DocxReadTool {
     }
 }
 
-fn extract_docx(path: &std::path::Path) -> Result<String> {
+pub(crate) fn extract_docx(path: &std::path::Path) -> Result<String> {
     let bytes =
         std::fs::read(path).map_err(|e| Error::Tool(format!("read {}: {}", path.display(), e)))?;
     let mut zip =

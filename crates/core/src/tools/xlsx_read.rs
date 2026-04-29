@@ -59,7 +59,11 @@ impl Tool for XlsxReadTool {
     }
 }
 
-fn extract_xlsx(path: &std::path::Path, sheet: Option<String>, format: &str) -> Result<String> {
+pub(crate) fn extract_xlsx(
+    path: &std::path::Path,
+    sheet: Option<String>,
+    format: &str,
+) -> Result<String> {
     let mut workbook = open_workbook_auto(path)
         .map_err(|e| Error::Tool(format!("open {}: {}", path.display(), e)))?;
 

@@ -49,7 +49,7 @@ impl Tool for PptxReadTool {
     }
 }
 
-fn extract_pptx(path: &std::path::Path) -> Result<String> {
+pub(crate) fn extract_pptx(path: &std::path::Path) -> Result<String> {
     let bytes =
         std::fs::read(path).map_err(|e| Error::Tool(format!("read {}: {}", path.display(), e)))?;
     let mut zip =

@@ -88,8 +88,23 @@ function isTextEditable(path: string): boolean {
 }
 
 function isMarkdownPath(path: string): boolean {
+  // Used to gate the iframe's `srcDoc` branch (vs. the asset-URL fetch
+  // branch). Backend-rendered HTML previews — Markdown source files
+  // *and* the Office formats whose extracted text we render through
+  // the same comrak pipeline — both want srcDoc. Adding the office
+  // extensions here is what makes Files-tab previews work for them.
   const e = extOf(path);
-  return e === "md" || e === "markdown";
+  return (
+    e === "md" ||
+    e === "markdown" ||
+    e === "docx" ||
+    e === "xlsx" ||
+    e === "xlsm" ||
+    e === "xlsb" ||
+    e === "xls" ||
+    e === "ods" ||
+    e === "pptx"
+  );
 }
 
 // Build a same-origin URL for the custom protocol's file-asset handler.
