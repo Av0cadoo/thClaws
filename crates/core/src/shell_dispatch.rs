@@ -1477,7 +1477,13 @@ pub async fn dispatch(
             }
         }
         SlashCommand::PluginInstall { url, user } => {
-            match crate::plugins::install(&url, user).await {
+            // Resolve marketplace slug → install_url (no-op for URLs).
+            let (effective_url, abort_msg) = crate::repl::resolve_plugin_install_target(&url);
+            if let Some(msg) = abort_msg {
+                emit(events_tx, msg);
+                return;
+            }
+            match crate::plugins::install(&effective_url, user).await {
                 Ok(plugin) => {
                     // Refresh the SkillTool store so plugin-contributed
                     // skills are callable in this session. Plugin-

@@ -23,5 +23,16 @@
       "homepage": "https://github.com/thClaws/marketplace/tree/main/mcp/weather-mcp"
     }
   ],
-  "plugins": []
+  "plugins": [
+    {
+      "name": "productivity",
+      "short_description": "Task management, workplace memory, visual dashboard",
+      "description": "Manage tasks (TASKS.md), build up workplace memory (people, projects, terminology, shorthand), and operate from a visual dashboard. Includes /start to bootstrap, /update to sync from connectors, and a memory-management skill that decodes nicknames/acronyms/codenames so the agent acts like a colleague. Forked from anthropics/knowledge-work-plugins with empty .mcp.json — install the connectors you actually use via /mcp install.",
+      "category": "workflow",
+      "license": "Apache-2.0",
+      "license_tier": "open",
+      "install_url": "https://github.com/thClaws/marketplace.git#main:plugins/productivity",
+      "homepage": "https://github.com/thClaws/marketplace/tree/main/plugins/productivity"
+    }
+  ]
 }

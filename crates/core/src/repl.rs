@@ -213,7 +213,7 @@ fn parse_plugin_subcommand(cmd: &str, args: &str) -> SlashCommand {
                     user,
                 },
                 _ => SlashCommand::Unknown(
-                    "usage: /plugin install [--user] <git-url-or-.zip>".into(),
+                    "usage: /plugin install [--user] <name-or-git-url-or-.zip>".into(),
                 ),
             }
         }
@@ -789,6 +789,40 @@ fn resolve_skill_install_target(
             None,
             Some(format!(
                 "no skill named '{arg}' in marketplace and not a URL — try /skill search <query> or pass a git URL"
+            )),
+        ),
+    }
+}
+
+/// `/plugin install <X>` mirror of `resolve_skill_install_target`. If
+/// `arg` looks like a URL, pass it through; otherwise look it up in
+/// the marketplace's `plugins` array by name and return that entry's
+/// `install_url`. Returns `(effective_url, abort_msg)`.
+pub fn resolve_plugin_install_target(arg: &str) -> (String, Option<String>) {
+    if looks_like_url(arg) {
+        return (arg.to_string(), None);
+    }
+    let mp = crate::marketplace::load();
+    match mp.find_plugin(arg) {
+        Some(entry) if entry.license_tier == "linked-only" => {
+            let homepage = if entry.homepage.is_empty() {
+                "the upstream repo".to_string()
+            } else {
+                entry.homepage.clone()
+            };
+            (
+                String::new(),
+                Some(format!(
+                    "'{}' is source-available and cannot be redistributed — install directly from {}",
+                    entry.name, homepage
+                )),
+            )
+        }
+        Some(entry) => (entry.install_url.clone(), None),
+        None => (
+            String::new(),
+            Some(format!(
+                "no plugin named '{arg}' in marketplace and not a URL — try /plugin search <query> or pass a git URL"
             )),
         ),
     }
@@ -3017,7 +3051,15 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     }
                 }
                 SlashCommand::PluginInstall { url, user } => {
-                    match crate::plugins::install(&url, user).await {
+                    // Allow `/plugin install <name>` to resolve a
+                    // marketplace slug to its install_url. If `url`
+                    // already looks like a URL, this is a no-op.
+                    let (effective_url, abort_msg) = resolve_plugin_install_target(&url);
+                    if let Some(msg) = abort_msg {
+                        println!("{COLOR_YELLOW}{msg}{COLOR_RESET}");
+                        continue;
+                    }
+                    match crate::plugins::install(&effective_url, user).await {
                         Ok(plugin) => {
                             let manifest = plugin.manifest().ok();
                             let scope = if user { "user" } else { "project" };
