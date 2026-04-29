@@ -1483,6 +1483,20 @@ fn team_grounding_prompt(model: &str, team_enabled: bool) -> String {
     out
 }
 
+/// Squash any control char (newline, carriage return, tab, ESC, etc.)
+/// to a single space so a multi-line tool argument renders as one
+/// line in the terminal. Keeps printable Unicode (Thai, emoji, etc.)
+/// intact — only ASCII control chars get replaced. Then collapses
+/// runs of whitespace so a sanitized multi-line string doesn't read
+/// as `Line 1   Line 2  ` after stripping.
+fn sanitize_label_field(s: &str) -> String {
+    let cleaned: String = s
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn format_tool_label(name: &str, input: &serde_json::Value) -> String {
     let detail = match name {
         "Skill" => input
@@ -1494,8 +1508,19 @@ fn format_tool_label(name: &str, input: &serde_json::Value) -> String {
             .and_then(|v| v.as_str())
             .map(|a| format!("(agent={a})")),
         "Bash" => input.get("command").and_then(|v| v.as_str()).map(|c| {
-            let first: String = c.chars().take(40).collect();
-            format!("({first}{})", if c.chars().count() > 40 { "…" } else { "" })
+            // Same control-char strip as AskUserQuestion — bash
+            // commands often contain heredocs (`<<'PY' ... PY`) whose
+            // newlines break the single-line label.
+            let cleaned = sanitize_label_field(c);
+            let first: String = cleaned.chars().take(40).collect();
+            format!(
+                "({first}{})",
+                if cleaned.chars().count() > 40 {
+                    "…"
+                } else {
+                    ""
+                }
+            )
         }),
         "Read" | "Write" | "Edit" => input
             .get("path")
@@ -1514,10 +1539,18 @@ fn format_tool_label(name: &str, input: &serde_json::Value) -> String {
             .and_then(|v| v.as_str())
             .map(|q| format!("({q})")),
         "AskUserQuestion" => input.get("question").and_then(|v| v.as_str()).map(|q| {
-            let first: String = q.chars().take(60).collect();
+            // Strip newlines / control chars first — agents often pass
+            // multi-line prompts here, and the raw text breaks the
+            // single-line tool label in xterm.
+            let cleaned = sanitize_label_field(q);
+            let first: String = cleaned.chars().take(60).collect();
             format!(
                 "({first}{})",
-                if q.chars().count() > 60 { "..." } else { "" }
+                if cleaned.chars().count() > 60 {
+                    "..."
+                } else {
+                    ""
+                }
             )
         }),
         _ => None,
