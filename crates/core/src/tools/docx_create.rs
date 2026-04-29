@@ -146,12 +146,16 @@ fn render_docx(path: &Path, content: &str, body_pt: usize) -> Result<usize> {
     // until a block-end event flushes it to the doc. Header / list /
     // code-block state lives outside the inner buffer.
     let mut buf = String::new();
-    let mut current_pt = body_pt;
+    let current_pt = body_pt;
     let mut bold = false;
     let mut italic = false;
     let mut monospace = false;
     let mut list_kind: Option<ListKind> = None;
     let mut in_code_block = false;
+    // Heading level of the paragraph currently being assembled, if any.
+    // Markdown's H1..H4 → OOXML `Heading1..Heading4`. Reset on paragraph
+    // end so subsequent body text doesn't accidentally inherit the style.
+    let mut heading_level: Option<u8> = None;
 
     let flush = |docx: &mut Docx,
                  buf: &mut String,
@@ -159,11 +163,33 @@ fn render_docx(path: &Path, content: &str, body_pt: usize) -> Result<usize> {
                  bold: bool,
                  italic: bool,
                  mono: bool,
-                 list_kind: Option<ListKind>| {
+                 list_kind: Option<ListKind>,
+                 heading: Option<u8>| {
         if buf.is_empty() {
             return;
         }
-        let mut para = Paragraph::new().add_run(make_run(buf, pt, bold, italic, mono));
+        // For headings we attach the OOXML built-in `HeadingN` style to
+        // the paragraph and emit the run with fonts only — no manual
+        // bold/size. Word, LibreOffice, and Pages all ship built-in
+        // styles for Heading1..9 with the right sizes + bold, so the
+        // doc renders correctly in every viewer AND DocxRead picks up
+        // the heading semantically via its `<w:pStyle>` detection (so
+        // the Files-tab preview can render `<h1>` etc.). Layering manual
+        // bold/size on top of the style would override the style values.
+        let run = if heading.is_some() {
+            Run::new().add_text(buf.as_str()).fonts(
+                RunFonts::new()
+                    .ascii(LATIN_FONT)
+                    .hi_ansi(LATIN_FONT)
+                    .cs(THAI_FONT),
+            )
+        } else {
+            make_run(buf, pt, bold, italic, mono)
+        };
+        let mut para = Paragraph::new().add_run(run);
+        if let Some(level) = heading {
+            para = para.style(&format!("Heading{level}"));
+        }
         if let Some(kind) = list_kind {
             let id = match kind {
                 ListKind::Bullet => BULLET_ID,
@@ -180,24 +206,43 @@ fn render_docx(path: &Path, content: &str, body_pt: usize) -> Result<usize> {
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
                 flush(
-                    &mut docx, &mut buf, current_pt, bold, italic, monospace, list_kind,
+                    &mut docx,
+                    &mut buf,
+                    current_pt,
+                    bold,
+                    italic,
+                    monospace,
+                    list_kind,
+                    heading_level,
                 );
-                current_pt = heading_half_points(body_pt, level);
-                bold = true;
+                heading_level = Some(map_heading_level(level));
             }
             Event::End(TagEnd::Heading(_)) => {
                 flush(
-                    &mut docx, &mut buf, current_pt, bold, italic, monospace, list_kind,
+                    &mut docx,
+                    &mut buf,
+                    current_pt,
+                    bold,
+                    italic,
+                    monospace,
+                    list_kind,
+                    heading_level,
                 );
-                current_pt = body_pt;
-                bold = false;
+                heading_level = None;
             }
             Event::Start(Tag::Paragraph) => {
                 buf.clear();
             }
             Event::End(TagEnd::Paragraph) => {
                 flush(
-                    &mut docx, &mut buf, current_pt, bold, italic, monospace, list_kind,
+                    &mut docx,
+                    &mut buf,
+                    current_pt,
+                    bold,
+                    italic,
+                    monospace,
+                    list_kind,
+                    heading_level,
                 );
             }
             Event::Start(Tag::List(start)) => {
@@ -215,7 +260,14 @@ fn render_docx(path: &Path, content: &str, body_pt: usize) -> Result<usize> {
             }
             Event::End(TagEnd::Item) => {
                 flush(
-                    &mut docx, &mut buf, current_pt, bold, italic, monospace, list_kind,
+                    &mut docx,
+                    &mut buf,
+                    current_pt,
+                    bold,
+                    italic,
+                    monospace,
+                    list_kind,
+                    heading_level,
                 );
             }
             Event::Start(Tag::Emphasis) => italic = true,
@@ -224,14 +276,28 @@ fn render_docx(path: &Path, content: &str, body_pt: usize) -> Result<usize> {
             Event::End(TagEnd::Strong) => bold = false,
             Event::Start(Tag::CodeBlock(_)) => {
                 flush(
-                    &mut docx, &mut buf, current_pt, bold, italic, monospace, list_kind,
+                    &mut docx,
+                    &mut buf,
+                    current_pt,
+                    bold,
+                    italic,
+                    monospace,
+                    list_kind,
+                    heading_level,
                 );
                 in_code_block = true;
                 monospace = true;
             }
             Event::End(TagEnd::CodeBlock) => {
                 flush(
-                    &mut docx, &mut buf, current_pt, bold, italic, monospace, list_kind,
+                    &mut docx,
+                    &mut buf,
+                    current_pt,
+                    bold,
+                    italic,
+                    monospace,
+                    list_kind,
+                    heading_level,
                 );
                 in_code_block = false;
                 monospace = false;
@@ -245,7 +311,14 @@ fn render_docx(path: &Path, content: &str, body_pt: usize) -> Result<usize> {
                     for line in s.split('\n') {
                         if !first {
                             flush(
-                                &mut docx, &mut buf, current_pt, bold, italic, monospace, list_kind,
+                                &mut docx,
+                                &mut buf,
+                                current_pt,
+                                bold,
+                                italic,
+                                monospace,
+                                list_kind,
+                                heading_level,
                             );
                         }
                         buf.push_str(line);
@@ -259,24 +332,52 @@ fn render_docx(path: &Path, content: &str, body_pt: usize) -> Result<usize> {
                 // Inline code — flush the prior text run, then render
                 // this fragment in monospace, then resume normal.
                 flush(
-                    &mut docx, &mut buf, current_pt, bold, italic, monospace, list_kind,
+                    &mut docx,
+                    &mut buf,
+                    current_pt,
+                    bold,
+                    italic,
+                    monospace,
+                    list_kind,
+                    heading_level,
                 );
                 buf.push_str(&s);
                 flush(
-                    &mut docx, &mut buf, current_pt, bold, italic, true, list_kind,
+                    &mut docx,
+                    &mut buf,
+                    current_pt,
+                    bold,
+                    italic,
+                    true,
+                    list_kind,
+                    heading_level,
                 );
             }
             Event::SoftBreak => buf.push(' '),
             Event::HardBreak => {
                 flush(
-                    &mut docx, &mut buf, current_pt, bold, italic, monospace, list_kind,
+                    &mut docx,
+                    &mut buf,
+                    current_pt,
+                    bold,
+                    italic,
+                    monospace,
+                    list_kind,
+                    heading_level,
                 );
             }
             _ => {}
         }
     }
     flush(
-        &mut docx, &mut buf, current_pt, bold, italic, monospace, list_kind,
+        &mut docx,
+        &mut buf,
+        current_pt,
+        bold,
+        italic,
+        monospace,
+        list_kind,
+        heading_level,
     );
 
     let file = std::fs::File::create(path)
@@ -313,16 +414,18 @@ fn make_run(text: &str, pt_half: usize, bold: bool, italic: bool, mono: bool) ->
     run
 }
 
-fn heading_half_points(body_pt: usize, level: HeadingLevel) -> usize {
-    let body_pt_full = body_pt as f32 / 2.0;
-    let scaled = match level {
-        HeadingLevel::H1 => body_pt_full * 2.5,
-        HeadingLevel::H2 => body_pt_full * 2.0,
-        HeadingLevel::H3 => body_pt_full * 1.5,
-        HeadingLevel::H4 => body_pt_full * 1.25,
-        _ => body_pt_full * 1.1,
-    };
-    (scaled * 2.0) as usize
+/// Map pulldown-cmark's heading level to the OOXML built-in style number.
+/// `Heading1..Heading4` are the four levels we expose; H5/H6 fall back to
+/// Heading4 since Word's built-in styles for 5/6 render barely differently
+/// from body text and the user is unlikely to use them in agent output.
+fn map_heading_level(level: HeadingLevel) -> u8 {
+    match level {
+        HeadingLevel::H1 => 1,
+        HeadingLevel::H2 => 2,
+        HeadingLevel::H3 => 3,
+        HeadingLevel::H4 => 4,
+        HeadingLevel::H5 | HeadingLevel::H6 => 4,
+    }
 }
 
 #[cfg(test)]
@@ -352,12 +455,14 @@ mod tests {
     }
 
     #[test]
-    fn heading_scaling() {
-        assert!(
-            heading_half_points(22, HeadingLevel::H1) > heading_half_points(22, HeadingLevel::H2)
-        );
-        assert!(
-            heading_half_points(22, HeadingLevel::H2) > heading_half_points(22, HeadingLevel::H3)
-        );
+    fn heading_levels_map_correctly() {
+        assert_eq!(map_heading_level(HeadingLevel::H1), 1);
+        assert_eq!(map_heading_level(HeadingLevel::H2), 2);
+        assert_eq!(map_heading_level(HeadingLevel::H3), 3);
+        assert_eq!(map_heading_level(HeadingLevel::H4), 4);
+        // H5/H6 collapse to Heading4 — Word's built-in styles for 5/6
+        // are barely distinguishable from body text.
+        assert_eq!(map_heading_level(HeadingLevel::H5), 4);
+        assert_eq!(map_heading_level(HeadingLevel::H6), 4);
     }
 }
