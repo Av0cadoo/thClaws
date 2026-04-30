@@ -882,10 +882,7 @@ async fn run_worker(
                             // image2image returns a URL string, so
                             // text-only is sufficient.
                             let text = result.to_text();
-                            (
-                                serde_json::json!([{ "type": "text", "text": text }]),
-                                false,
-                            )
+                            (serde_json::json!([{ "type": "text", "text": text }]), false)
                         }
                         Err(e) => (
                             serde_json::json!([{ "type": "text", "text": format!("error: {e}") }]),
@@ -1227,10 +1224,19 @@ async fn drive_turn_stream(
                 );
                 let _ = events_tx.send(ViewEvent::ToolCallStart { name, label });
             }
-            Ok(AgentEvent::ToolCallResult { name, output, ui_resource, .. }) => {
+            Ok(AgentEvent::ToolCallResult {
+                name,
+                output,
+                ui_resource,
+                ..
+            }) => {
                 let out = output.unwrap_or_else(|e| e);
                 write_lead_log(&state.lead_log, "\x1b[90m✓\x1b[0m\n\x1b[32m");
-                let _ = events_tx.send(ViewEvent::ToolCallResult { name, output: out, ui_resource });
+                let _ = events_tx.send(ViewEvent::ToolCallResult {
+                    name,
+                    output: out,
+                    ui_resource,
+                });
             }
             Ok(AgentEvent::Done { usage, .. }) => {
                 write_lead_log(&state.lead_log, "\x1b[0m\n");
@@ -1362,10 +1368,19 @@ async fn handle_team_messages(
                 );
                 let _ = events_tx.send(ViewEvent::ToolCallStart { name, label });
             }
-            Ok(AgentEvent::ToolCallResult { name, output, ui_resource, .. }) => {
+            Ok(AgentEvent::ToolCallResult {
+                name,
+                output,
+                ui_resource,
+                ..
+            }) => {
                 let out = output.unwrap_or_else(|e| e);
                 write_lead_log(&state.lead_log, "\x1b[90m✓\x1b[0m\n\x1b[32m");
-                let _ = events_tx.send(ViewEvent::ToolCallResult { name, output: out, ui_resource });
+                let _ = events_tx.send(ViewEvent::ToolCallResult {
+                    name,
+                    output: out,
+                    ui_resource,
+                });
             }
             Ok(AgentEvent::Done { usage, .. }) => {
                 write_lead_log(&state.lead_log, "\x1b[0m\n");

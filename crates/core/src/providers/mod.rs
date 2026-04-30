@@ -705,8 +705,10 @@ mod tests {
                 .as_deref(),
             Some("thaillm/OpenThaiGPT-ThaiLLM-8B-Instruct-v7.2")
         );
-        assert!(ProviderKind::resolve_alias_for_provider("OpenThaiGPT", ProviderKind::Anthropic)
-            .is_none());
+        assert!(
+            ProviderKind::resolve_alias_for_provider("OpenThaiGPT", ProviderKind::Anthropic)
+                .is_none()
+        );
         assert!(
             ProviderKind::resolve_alias_for_provider("sonnet", ProviderKind::ThaiLLM).is_none()
         );

@@ -2902,11 +2902,9 @@ mod tool_coalesce_tests {
         let mut s = TerminalRenderState::default();
         render_terminal_ansi(&mut s, &start("Ls")).unwrap();
         render_terminal_ansi(&mut s, &ok()).unwrap();
-        let text = render_terminal_ansi(
-            &mut s,
-            &ViewEvent::AssistantTextDelta("Done.".to_string()),
-        )
-        .unwrap();
+        let text =
+            render_terminal_ansi(&mut s, &ViewEvent::AssistantTextDelta("Done.".to_string()))
+                .unwrap();
         assert!(text.starts_with("\r\n"));
         assert!(text.contains("Done."));
     }

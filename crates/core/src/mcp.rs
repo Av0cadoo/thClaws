@@ -658,7 +658,12 @@ impl McpClient {
             }
         });
 
-        let client = Self::from_streams(config.name.clone(), client_read, client_write, config.trusted);
+        let client = Self::from_streams(
+            config.name.clone(),
+            client_read,
+            client_write,
+            config.trusted,
+        );
         client.initialize().await?;
         Ok(client)
     }
@@ -1721,7 +1726,10 @@ mod tests {
         assert_eq!(extract_ui_resource_uri(Some(&json!({}))), None);
         assert_eq!(extract_ui_resource_uri(None), None);
         // Wrong shapes don't blow up.
-        assert_eq!(extract_ui_resource_uri(Some(&json!({"ui": "string"}))), None);
+        assert_eq!(
+            extract_ui_resource_uri(Some(&json!({"ui": "string"}))),
+            None
+        );
         assert_eq!(
             extract_ui_resource_uri(Some(&json!({"ui": {"resourceUri": 42}}))),
             None,
@@ -1732,7 +1740,10 @@ mod tests {
     fn sanitize_tool_name_segment_replaces_disallowed_chars() {
         // Real-world cases: server names with dots, tool names with slashes.
         assert_eq!(sanitize_tool_name_segment("pinn.ai"), "pinn_ai");
-        assert_eq!(sanitize_tool_name_segment("foo.bar:baz/qux"), "foo_bar_baz_qux");
+        assert_eq!(
+            sanitize_tool_name_segment("foo.bar:baz/qux"),
+            "foo_bar_baz_qux"
+        );
         // Already-safe input is left alone.
         assert_eq!(sanitize_tool_name_segment("filesystem"), "filesystem");
         assert_eq!(sanitize_tool_name_segment("read_file-v2"), "read_file-v2");
