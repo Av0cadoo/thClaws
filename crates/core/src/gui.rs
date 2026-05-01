@@ -1185,7 +1185,22 @@ async fn build_all_models_payload() -> String {
         let mut model_ids: std::collections::BTreeMap<String, Option<u32>> =
             std::collections::BTreeMap::new();
         for (id, entry) in cat.list_models_for_provider(name) {
-            model_ids.insert(id, entry.context);
+            // Normalise to the canonical thclaws-routable form: if
+            // `ProviderKind::detect` doesn't already resolve `id` to
+            // the current provider, prepend the provider name as a
+            // prefix so the picker ships ids that survive the round
+            // trip through `model_set` → `detect` → `build_provider`.
+            // OpenRouter is the live case — its catalogue stores rows
+            // like `qwen/qwen-2.5-72b-instruct` (the upstream wire id),
+            // and without this normalisation `detect` would route them
+            // to DashScope on the leading `qwen` prefix and the wrong
+            // provider would 404 on a model it doesn't ship.
+            let canonical = if ProviderKind::detect(&id) == Some(*kind) {
+                id
+            } else {
+                format!("{name}/{id}")
+            };
+            model_ids.insert(canonical, entry.context);
         }
         if matches!(kind, ProviderKind::Ollama) {
             for id in &ollama_live {
