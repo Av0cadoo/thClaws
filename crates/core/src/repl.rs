@@ -36,12 +36,14 @@ const COLOR_RED: &str = "\x1b[31m";
 /// GUI chat tab gets. M5 CLI parity. Called from the agent loop after
 /// any plan-tool ToolCallResult so the user sees the live state inline:
 ///
-///     ─── plan: 4 steps · 2 done · current step 3 ───────
-///       ✓ 1. Scaffold project
-///       ✓ 2. Install dependencies
-///       ◉ 3. Run tests
-///         4. Deploy
-///     ─────────────────────────────────────────────────
+/// ```text
+/// ─── plan: 4 steps · 2 done · current step 3 ───────
+///   ✓ 1. Scaffold project
+///   ✓ 2. Install dependencies
+///   ◉ 3. Run tests
+///     4. Deploy
+/// ─────────────────────────────────────────────────
+/// ```
 ///
 /// Status glyphs: ✓ done · ◉ in_progress (yellow) · ✕ failed (red) ·
 /// space todo. Notes (failure reasons, "skipped by user") render
