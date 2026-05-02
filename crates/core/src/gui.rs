@@ -1166,6 +1166,9 @@ fn escape_for_js(s: &str) -> String {
         .replace('\'', "\\'")
         .replace('\n', "\\n")
         .replace('\r', "\\r")
+        .replace('\0', "\\0")
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029")
 }
 
 #[cfg(target_os = "macos")]
@@ -3183,7 +3186,7 @@ pub fn run_gui() {
                 });
                 let js = format!(
                     "window.__thclaws_dispatch('{}')",
-                    state.to_string().replace('\\', "\\\\").replace('\'', "\\'")
+                    escape_for_js(&state.to_string())
                 );
                 let _ = webview.evaluate_script(&js);
             }
