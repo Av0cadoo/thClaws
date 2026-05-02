@@ -640,7 +640,14 @@ export function ChatView({ active, modalOpen }: Props) {
                     fontFamily:
                       "Menlo, Monaco, 'Courier New', monospace",
                     paddingLeft: 2,
-                    opacity: msg.toolDone ? 0.7 : 1,
+                    // The 0.7 dim signals "this tool finished" on the
+                    // text-only indicator. Skip it when there's an
+                    // embedded MCP-Apps widget — opacity inherits into
+                    // the iframe and washes out widget content (light
+                    // mode is most visible). The widget is the focus;
+                    // the parent indicator above it doesn't need the
+                    // dim treatment when there's actual UI to look at.
+                    opacity: msg.toolDone && !widget ? 0.7 : 1,
                   }}
                 >
                   <div className="inline-flex items-center gap-1 text-xs">

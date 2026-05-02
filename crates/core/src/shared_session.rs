@@ -812,7 +812,15 @@ async fn run_worker(
     // /load gets persisted. Subsequent session swaps reassign this
     // arc — see the helper at the call sites below.
     if let (Some(store), Ok(mut g)) = (session_store.as_ref(), plan_persist_path.lock()) {
-        *g = Some(store.path_for(&current_session.id));
+        let path = store.path_for(&current_session.id);
+        // Write the header BEFORE pointing plan_persist_path at this
+        // file. Otherwise the first plan_state mutation (typically
+        // restore_from_session below) races append_plan_snapshot to
+        // the empty path, creates the file headerless, and the
+        // session becomes invisible to SessionStore::list. Same
+        // pattern at every other Session::new site below.
+        let _ = current_session.write_header_if_missing(&path);
+        *g = Some(path);
     }
     // Reset plan_state to whatever the initial session has (None for
     // a fresh `Session::new`, but Some(plan) for a session loaded
@@ -906,7 +914,9 @@ async fn run_worker(
                 if let (Some(store), Ok(mut g)) =
                     (state.session_store.as_ref(), plan_persist_path.lock())
                 {
-                    *g = Some(store.path_for(&state.session.id));
+                    let path = store.path_for(&state.session.id);
+                    let _ = state.session.write_header_if_missing(&path);
+                    *g = Some(path);
                 }
                 crate::tools::plan_state::clear();
                 let _ = events_tx.send(ViewEvent::HistoryReplaced(Vec::new()));
@@ -1056,28 +1066,68 @@ async fn run_worker(
                 arguments,
             } => {
                 // Widget asked us to invoke a tool on its originating
-                // MCP server (app.callServerTool). Trust gate already
-                // applied when the widget was rendered (only trusted
-                // servers ship a `ui_resource` in the first place);
-                // direct invoke here.
+                // MCP server (app.callServerTool). Trust at widget-
+                // render time only gates HTML rendering, NOT
+                // unattended tool execution — M6.15 BUG 2 routes
+                // widget tool-calls through the same approval gate
+                // the agent loop uses so a trusted server's widget
+                // can't silently invoke `delete_*`-style tools when
+                // the user has set permission_mode = "ask".
                 let tool = state.tool_registry.get(&qualified_name);
                 let (content, is_error) = match tool {
-                    Some(t) => match t.call_multimodal(arguments).await {
-                        Ok(result) => {
-                            // Convert ToolResultContent → MCP
-                            // CallToolResult.content shape. Phase 1
-                            // is text-only — image blocks degrade to
-                            // their text summary via to_text. Pinn.ai
-                            // image2image returns a URL string, so
-                            // text-only is sufficient.
-                            let text = result.to_text();
-                            (serde_json::json!([{ "type": "text", "text": text }]), false)
+                    Some(t) => {
+                        let mode = crate::permissions::current_mode();
+                        let needs_approval = matches!(
+                            mode,
+                            crate::permissions::PermissionMode::Ask
+                                | crate::permissions::PermissionMode::Plan,
+                        ) && t.requires_approval(&arguments);
+                        let denied = if needs_approval {
+                            let req = crate::permissions::ApprovalRequest {
+                                tool_name: qualified_name.clone(),
+                                input: arguments.clone(),
+                                summary: Some(format!(
+                                    "MCP-App widget requested `{qualified_name}`. Allow?"
+                                )),
+                            };
+                            matches!(
+                                state.approver.approve(&req).await,
+                                crate::permissions::ApprovalDecision::Deny
+                            )
+                        } else {
+                            false
+                        };
+                        if denied {
+                            (
+                                serde_json::json!([{
+                                    "type": "text",
+                                    "text": format!("denied by user: {qualified_name}"),
+                                }]),
+                                true,
+                            )
+                        } else {
+                            match t.call_multimodal(arguments).await {
+                                Ok(result) => {
+                                    // Convert ToolResultContent → MCP
+                                    // CallToolResult.content shape.
+                                    // Phase 1 is text-only — image
+                                    // blocks degrade to their text
+                                    // summary via to_text. Pinn.ai
+                                    // image2image returns a URL
+                                    // string, so text-only suffices.
+                                    let text = result.to_text();
+                                    (
+                                        serde_json::json!([{ "type": "text", "text": text }]),
+                                        false,
+                                    )
+                                }
+                                Err(e) => (
+                                    serde_json::json!([{ "type": "text", "text": format!("error: {e}") }]),
+                                    true,
+                                ),
+                            }
                         }
-                        Err(e) => (
-                            serde_json::json!([{ "type": "text", "text": format!("error: {e}") }]),
-                            true,
-                        ),
-                    },
+                    }
                     None => (
                         serde_json::json!([{ "type": "text", "text": format!("unknown tool: {qualified_name}") }]),
                         true,
@@ -1126,7 +1176,9 @@ async fn run_worker(
                             if let (Some(store), Ok(mut g)) =
                                 (state.session_store.as_ref(), plan_persist_path.lock())
                             {
-                                *g = Some(store.path_for(&state.session.id));
+                                let path = store.path_for(&state.session.id);
+                                let _ = state.session.write_header_if_missing(&path);
+                                *g = Some(path);
                             }
                             crate::tools::plan_state::clear();
                             let _ = events_tx.send(ViewEvent::HistoryReplaced(Vec::new()));
@@ -1172,6 +1224,14 @@ async fn run_worker(
                     }
                 }
 
+                // Rebuild `session_store` against the NEW cwd. Without
+                // this, `save_history` and `build_session_list` stay
+                // pinned to the previous workspace's `.thclaws/sessions/`,
+                // so saves land in the wrong project and the sidebar
+                // never reflects the new project's sessions.
+                state.session_store =
+                    crate::session::SessionStore::default_path().map(SessionStore::new);
+
                 // If the model changed, rebuild the agent without history
                 // — the new provider's message schema may not match the
                 // old conversation, same logic as `/model` swap.
@@ -1191,7 +1251,9 @@ async fn run_worker(
                         if let (Some(store), Ok(mut g)) =
                             (state.session_store.as_ref(), plan_persist_path.lock())
                         {
-                            *g = Some(store.path_for(&state.session.id));
+                            let path = store.path_for(&state.session.id);
+                            let _ = state.session.write_header_if_missing(&path);
+                            *g = Some(path);
                         }
                         crate::tools::plan_state::clear();
                     }
@@ -1200,6 +1262,14 @@ async fn run_worker(
                 // Always rebuild the system prompt — the cwd it embeds
                 // changed, even if the model didn't.
                 state.rebuild_system_prompt();
+
+                // Broadcast the new project's session list so the
+                // sidebar redraws. Mirrors what `/new` and `/load` do
+                // after they mutate the same store.
+                let _ = events_tx.send(ViewEvent::SessionListRefresh(build_session_list(
+                    &state.session_store,
+                    &state.session.id,
+                )));
 
                 let _ = events_tx.send(ViewEvent::SlashOutput(format!(
                     "[cwd] {} → model: {} (was: {})",

@@ -158,6 +158,39 @@ impl Session {
         self.updated_at = now_secs();
     }
 
+    /// Write the JSONL header line for this session if the file is
+    /// missing or empty. Idempotent — safe to call repeatedly. Used by
+    /// the worker at session-mint time so the header is on disk
+    /// BEFORE any `plan_snapshot` event (or other auxiliary write)
+    /// can race in and create the file headerless. Pre-fix: a fresh
+    /// session's first write was usually `append_plan_snapshot` from
+    /// `plan_state::clear()`, which created the file without a header
+    /// — `Session::append_to` then saw `path.exists() == true` and
+    /// skipped its own header write. The resulting headerless JSONL
+    /// failed `load_from` with "missing header line" and the session
+    /// silently disappeared from `SessionStore::list`.
+    pub fn write_header_if_missing(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let needs_header = !path.exists()
+            || std::fs::metadata(path).map(|m| m.len() == 0).unwrap_or(true);
+        if !needs_header {
+            return Ok(());
+        }
+        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+        let header = SessionHeader {
+            kind: "header".into(),
+            id: self.id.clone(),
+            model: self.model.clone(),
+            cwd: self.cwd.clone(),
+            created_at: self.created_at,
+        };
+        let line = serde_json::to_string(&header)?;
+        writeln!(file, "{}", line)?;
+        Ok(())
+    }
+
     /// Append only the new messages (since `last_saved_count`) to the JSONL file.
     /// Writes the header line if the file doesn't exist yet.
     pub fn append_to(&mut self, path: &Path) -> Result<()> {
@@ -276,6 +309,17 @@ impl Session {
             } else if kind == "plan_snapshot" {
                 // Latest snapshot wins. `null` plan means the active
                 // plan was cleared (M1+).
+                //
+                // Deliberately do NOT bump `last_timestamp` from a
+                // plan_snapshot event. Loading a session triggers
+                // `plan_state::restore_from_session`, which fires the
+                // broadcaster and writes a plan_snapshot with the
+                // current wall-clock time — purely a state-restoration
+                // artifact, not user activity. Without this guard the
+                // sidebar's "most-recently-used" sort would jump the
+                // just-clicked session to the top, masking the actual
+                // recency ordering. Sort recency now tracks real
+                // message / rename / compaction events only.
                 let ev: PlanSnapshotEvent = serde_json::from_value(val).map_err(|e| {
                     Error::Config(format!(
                         "session plan_snapshot parse ({}:{}): {e}",
@@ -283,9 +327,6 @@ impl Session {
                         line_num + 1
                     ))
                 })?;
-                if ev.timestamp > last_timestamp {
-                    last_timestamp = ev.timestamp;
-                }
                 plan = ev.plan;
             } else if kind == "compaction" {
                 // Replay checkpoint: everything accumulated so far is
@@ -355,12 +396,36 @@ impl Session {
             }
         }
 
-        let h = header.ok_or_else(|| {
-            Error::Config(format!(
-                "session parse ({}): missing header line",
-                path.display()
-            ))
-        })?;
+        // Salvage headerless files (legacy / pre-fix sessions where
+        // `append_plan_snapshot` raced ahead of `Session::append_to`
+        // and created the file without a header). Infer the id from
+        // the filename, model = "unknown", cwd = "", created_at =
+        // file mtime so the session still appears in the sidebar and
+        // can be loaded. The reader stays strict for in-band errors;
+        // only the missing-header case is recovered.
+        let h = match header {
+            Some(h) => h,
+            None => {
+                let id = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let created_at = std::fs::metadata(path)
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                SessionHeader {
+                    kind: "header".into(),
+                    id,
+                    model: "unknown".into(),
+                    cwd: String::new(),
+                    created_at,
+                }
+            }
+        };
 
         let msg_count = messages.len();
         Ok(Session {
@@ -1076,12 +1141,80 @@ mod tests {
     }
 
     #[test]
-    fn load_errors_on_missing_header() {
+    fn load_salvages_headerless_files() {
+        // Pre-fix `append_plan_snapshot` raced ahead of `Session::append_to`
+        // when minting a fresh session, leaving a headerless JSONL on
+        // disk. The strict reader rejected such files with "missing
+        // header line" and `SessionStore::list` silently dropped them
+        // — sidebar showed "No saved sessions" even when files were
+        // present. Salvage path: infer id from the filename, model =
+        // "unknown", cwd = "", created_at = mtime, so the file at
+        // least appears in the sidebar and can be loaded.
         let dir = tempdir().unwrap();
         let store = SessionStore::new(dir.path().to_path_buf());
         let path = store.path_for("sess-no-header");
         std::fs::write(&path, r#"{"type":"user","content":[],"timestamp":1}"#).unwrap();
-        let err = store.load("sess-no-header").unwrap_err();
-        assert!(format!("{err}").contains("missing header"));
+        let s = store.load("sess-no-header").expect("salvage headerless");
+        assert_eq!(s.id, "sess-no-header");
+        assert_eq!(s.model, "unknown");
+        assert_eq!(s.messages.len(), 1);
+    }
+
+    #[test]
+    fn write_header_if_missing_writes_on_empty_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("sess-test.jsonl");
+        // Empty file simulates the `append_plan_snapshot` race condition
+        // — file exists but no header has been written yet. Wait, in
+        // the real race, the plan_snapshot line IS written. So check
+        // both: empty file gets a header, non-empty file does not.
+        std::fs::write(&path, b"").unwrap();
+        let session = Session::new("test-model", "/test/cwd");
+        session.write_header_if_missing(&path).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains(r#""type":"header""#));
+        assert!(contents.contains(r#""model":"test-model""#));
+    }
+
+    #[test]
+    fn plan_snapshot_does_not_bump_updated_at() {
+        // Sidebar sorts by `updated_at`. Loading a session triggers
+        // `plan_state::restore_from_session`, which fires the
+        // broadcaster's `append_plan_snapshot` with the current wall-
+        // clock time. If that timestamp bumped `updated_at`, every
+        // session click would jump that session to the top of the
+        // sidebar — masking real recency. Pin: plan_snapshot
+        // timestamps are ignored by the activity-recency calc.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("sess-test.jsonl");
+        // Header (created_at = 100), one user message at t=200, then
+        // a much-later plan_snapshot at t=999_999 (simulating a
+        // session click bumping the snapshot to "now").
+        let lines = [
+            r#"{"type":"header","id":"sess-test","model":"m","cwd":"","created_at":100}"#,
+            r#"{"type":"user","content":[],"timestamp":200}"#,
+            r#"{"type":"plan_snapshot","plan":null,"timestamp":999999}"#,
+        ];
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        let session = Session::load_from(&path).unwrap();
+        // updated_at must come from the message timestamp (200), NOT
+        // from the plan_snapshot (999_999).
+        assert_eq!(
+            session.updated_at, 200,
+            "plan_snapshot should not bump updated_at; got {}",
+            session.updated_at
+        );
+    }
+
+    #[test]
+    fn write_header_if_missing_idempotent_on_populated_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("sess-test.jsonl");
+        std::fs::write(&path, "existing line\n").unwrap();
+        let session = Session::new("test-model", "/test/cwd");
+        session.write_header_if_missing(&path).unwrap();
+        // No header injected because the file already has content.
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(contents, "existing line\n");
     }
 }
