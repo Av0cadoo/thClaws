@@ -16,9 +16,8 @@ use crate::providers::{
     ollama_cloud::OllamaCloudProvider, openai::OpenAIProvider, Provider, ProviderKind,
 };
 use crate::session::{Session, SessionStore};
-use crate::subagent::{AgentFactory, SubAgentTool};
+use crate::subagent::{ProductionAgentFactory, SubAgentTool};
 use crate::tools::ToolRegistry;
-use async_trait::async_trait;
 use futures::StreamExt;
 use std::io::Write;
 use std::sync::Arc;
@@ -2226,117 +2225,10 @@ fn save_project_model(model: &str) {
     }
 }
 
-/// Agent factory used by the REPL's `Task` sub-agent tool.
-///
-/// Supports multi-level recursion: child agents get their own `Task` tool
-/// at `depth + 1`, so they can delegate further up to `max_depth`.
-/// Named agent definitions override model, instructions, and tool subset.
-struct ReplAgentFactory {
-    provider: Arc<dyn Provider>,
-    base_tools: ToolRegistry,
-    model: String,
-    system: String,
-    max_iterations: usize,
-    max_depth: usize,
-    agent_defs: crate::agent_defs::AgentDefsConfig,
-    /// M6.20 BUG H1: subagents must inherit the parent's approver and
-    /// permission mode. Pre-fix `Agent::new` defaults (`AutoApprover` +
-    /// `PermissionMode::Auto`) combined with the dispatch fallback at
-    /// `agent.rs::permission_mode` short-circuited Ask mode entirely
-    /// for any tool the subagent ran. The user's "ask before mutating"
-    /// promise was bypassed via Task delegation.
-    approver: Arc<dyn crate::permissions::ApprovalSink>,
-    permission_mode: crate::permissions::PermissionMode,
-}
-
-#[async_trait]
-impl AgentFactory for ReplAgentFactory {
-    async fn build(
-        &self,
-        _prompt: &str,
-        agent_def: Option<&crate::agent_defs::AgentDef>,
-        child_depth: usize,
-    ) -> Result<Agent> {
-        let model = agent_def
-            .and_then(|d| d.model.as_deref())
-            .unwrap_or(&self.model);
-        let mut system = agent_def
-            .map(|d| {
-                if d.instructions.is_empty() {
-                    self.system.clone()
-                } else {
-                    format!(
-                        "{}\n\n# Agent instructions\n{}",
-                        self.system, d.instructions
-                    )
-                }
-            })
-            .unwrap_or_else(|| self.system.clone());
-        // Every sub-agent (launched via the Task tool, i.e. child_depth > 0)
-        // gets a generic addendum explaining sub-agent semantics. Override in
-        // .thclaws/prompt/subagent.md.
-        if child_depth > 0 {
-            system.push_str(&crate::prompts::load(
-                "subagent",
-                crate::prompts::defaults::SUBAGENT,
-            ));
-        }
-        let max_iter = agent_def
-            .map(|d| d.max_iterations)
-            .unwrap_or(self.max_iterations);
-
-        // Build tool registry — filter by agent def's tools list if specified.
-        let mut tools = if let Some(def) = agent_def {
-            if def.tools.is_empty() {
-                self.base_tools.clone()
-            } else {
-                let mut filtered = ToolRegistry::new();
-                for name in &def.tools {
-                    if let Some(tool) = self.base_tools.get(name) {
-                        filtered.register(tool);
-                    }
-                }
-                filtered
-            }
-        } else {
-            self.base_tools.clone()
-        };
-
-        // Add a Task tool at the next depth (multi-level recursion).
-        if child_depth < self.max_depth {
-            let child_factory = Arc::new(ReplAgentFactory {
-                provider: self.provider.clone(),
-                base_tools: self.base_tools.clone(),
-                model: self.model.clone(),
-                system: self.system.clone(),
-                max_iterations: self.max_iterations,
-                max_depth: self.max_depth,
-                agent_defs: self.agent_defs.clone(),
-                // M6.20 BUG H1: propagate approver + permission_mode
-                // down the recursion so every nested subagent inherits
-                // the same gate instead of falling back to Auto.
-                approver: self.approver.clone(),
-                permission_mode: self.permission_mode,
-            });
-            tools.register(Arc::new(
-                SubAgentTool::new(child_factory)
-                    .with_depth(child_depth)
-                    .with_max_depth(self.max_depth)
-                    .with_agent_defs(self.agent_defs.clone()),
-            ));
-        }
-
-        // M6.20 BUG H1: wire the parent's approver and permission_mode
-        // onto the child agent. Without this the child silently used
-        // AutoApprover (Agent::new default) and the dispatch fallback
-        // promoted the global Ask back to Auto, bypassing the user's
-        // approval gate entirely for any subagent tool call.
-        Ok(Agent::new(self.provider.clone(), tools, model, &system)
-            .with_max_iterations(max_iter)
-            .with_approver(self.approver.clone())
-            .with_permission_mode(self.permission_mode))
-    }
-}
+// M6.33: ReplAgentFactory was promoted to `crate::subagent::ProductionAgentFactory`
+// so the GUI's `shared_session::build_state` can register the Task tool too
+// (SUB1). Same shape, same fields, same propagation semantics — just lifted
+// to a shared location.
 
 /// Spawn every configured MCP server and register its discovered tools into
 /// the passed-in registry. Returns the spawned clients (must stay alive for
@@ -2526,6 +2418,17 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
     // env) don't accidentally pick up the lead flag.
     crate::team::set_is_team_lead(team_enabled && team_agent_name.is_none());
 
+    // M6.34 TEAM3: capture our team_dir so the EOF cleanup hammer
+    // (`kill_my_teammates`) can target ONLY teammates of THIS lead
+    // session — pre-fix `pkill -f team-agent` killed teammates of
+    // other thClaws sessions (any project on the box) too.
+    if team_enabled && team_agent_name.is_none() {
+        let td = std::env::var("THCLAWS_TEAM_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| crate::team::Mailbox::default_dir());
+        crate::team::set_lead_team_dir(&td);
+    }
+
     // Team agents: remove interactive tools — no human is watching.
     if team_agent_name.is_some() {
         tool_registry.remove("AskUserQuestion");
@@ -2667,29 +2570,16 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
     };
     let approver = ReplApprover::new();
 
-    // Register the Task tool with multi-level recursion support.
-    // Child agents get their own Task tool at depth+1 (up to max_depth).
-    {
-        let plugin_agent_dirs = crate::plugins::plugin_agent_dirs();
-        let agent_defs = crate::agent_defs::AgentDefsConfig::load_with_extra(&plugin_agent_dirs);
-        let base_tools = tool_registry.clone();
-        let factory = Arc::new(ReplAgentFactory {
-            provider: provider.clone(),
-            base_tools,
-            model: config.model.clone(),
-            system: system.clone(),
-            max_iterations: config.max_iterations,
-            max_depth: crate::subagent::DEFAULT_MAX_DEPTH,
-            agent_defs: agent_defs.clone(),
-            approver: approver.clone(),
-            permission_mode: perm_mode,
-        });
-        tool_registry.register(Arc::new(
-            SubAgentTool::new(factory)
-                .with_depth(0)
-                .with_agent_defs(agent_defs),
-        ));
-    }
+    // M6.33 SUB3: tool filtering MUST run BEFORE registering the Task
+    // tool — otherwise the subagent's `base_tools` snapshot includes
+    // tools the parent was forbidden from using, so a model that
+    // can't call Bash directly could spawn a Task and have the
+    // subagent run Bash. Privilege-escalation primitive.
+    //
+    // Order: (1) apply --allowed-tools / --disallowed-tools filter to
+    // tool_registry. (2) snapshot the FILTERED registry as base_tools.
+    // (3) register Task with the filtered base_tools.
+
     // Apply tool filtering from config. Team-essential tools are always kept.
     let team_essential_tools: std::collections::HashSet<&str> = [
         "SendMessage",
@@ -2708,8 +2598,14 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
     if let Some(ref allowed) = config.allowed_tools {
         let mut allowed_set: std::collections::HashSet<&str> =
             allowed.iter().map(|s| s.as_str()).collect();
-        // Always keep team-essential tools for teammates.
-        if team_agent_name.is_some() {
+        // M6.34 TEAM4: keep team-essential tools whenever the team
+        // feature is on, not just for teammate processes. Pre-fix the
+        // lead's `--allowed-tools Read` would silently strip
+        // SendMessage/TeamStatus/CheckInbox/etc — coordination broken
+        // without a clear error. Asymmetric with the disallowed_tools
+        // handling below, which already protects team_essential
+        // unconditionally.
+        if team_enabled {
             allowed_set.extend(&team_essential_tools);
         }
         let all_names: Vec<String> = tool_registry
@@ -2730,6 +2626,39 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                 tool_registry.remove(name);
             }
         }
+    }
+
+    // M6.33 SUB1 + SUB3 + SUB4: register the Task tool AFTER the
+    // --allowed-tools / --disallowed-tools filter has run. The
+    // ProductionAgentFactory captures the FILTERED tool_registry as
+    // its `base_tools`, so subagents inherit the same restrictions
+    // the parent has. Pre-fix base_tools was snapshotted BEFORE
+    // filtering — Task became a privilege-escalation primitive
+    // (model spawns subagent → subagent has tools the parent was
+    // forbidden from using).
+    {
+        let plugin_agent_dirs = crate::plugins::plugin_agent_dirs();
+        let agent_defs = crate::agent_defs::AgentDefsConfig::load_with_extra(&plugin_agent_dirs);
+        let base_tools = tool_registry.clone();
+        let factory = Arc::new(ProductionAgentFactory {
+            provider: provider.clone(),
+            base_tools,
+            model: config.model.clone(),
+            system: system.clone(),
+            max_iterations: config.max_iterations,
+            max_depth: crate::subagent::DEFAULT_MAX_DEPTH,
+            agent_defs: agent_defs.clone(),
+            approver: approver.clone(),
+            permission_mode: perm_mode,
+            // CLI doesn't have a CancelToken plumbing today; subagents
+            // run uninterruptibly here. GUI passes Some via build_state.
+            cancel: None,
+        });
+        tool_registry.register(Arc::new(
+            SubAgentTool::new(factory)
+                .with_depth(0)
+                .with_agent_defs(agent_defs),
+        ));
     }
 
     // If a team exists, inject lead coordination rules into the system prompt.
@@ -3153,8 +3082,11 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                 let unread = mailbox.read_unread("lead").unwrap_or_default();
                 if !unread.is_empty() {
                     let ids: Vec<String> = unread.iter().map(|m| m.id.clone()).collect();
-                    let _ = mailbox.mark_as_read("lead", &ids);
-                    let _ = inbox_tx.send(unread);
+                    // M6.34 TEAM5: send THEN mark-as-read so a
+                    // closed channel doesn't silently lose messages.
+                    if inbox_tx.send(unread).is_ok() {
+                        let _ = mailbox.mark_as_read("lead", &ids);
+                    }
                 }
                 tokio::time::sleep(tokio::time::Duration::from_millis(
                     crate::team::POLL_INTERVAL_MS,
@@ -3335,9 +3267,8 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     match result {
                         Ok(Some(l)) => { line = l; break; }
                         _ => {
-                            let _ = std::process::Command::new("pkill")
-                                .args(["-f", "team-agent"])
-                                .status();
+                            // M6.34 TEAM3: scoped to this lead's team_dir.
+                            crate::team::kill_my_teammates();
                             println!("{COLOR_DIM}bye{COLOR_RESET}");
                             return Ok(());
                         }
@@ -6150,9 +6081,8 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
     }
 
     // Kill any teammate processes spawned by this session.
-    let _ = std::process::Command::new("pkill")
-        .args(["-f", "team-agent"])
-        .status();
+    // M6.34 TEAM3: scoped to this lead's team_dir.
+    crate::team::kill_my_teammates();
     println!("{COLOR_DIM}bye{COLOR_RESET}");
     Ok(())
 }
@@ -7165,6 +7095,7 @@ mod tests {
     async fn subagent_factory_propagates_approver_and_permission_mode() {
         use crate::permissions::{ApprovalSink, DenyApprover, PermissionMode};
         use crate::providers::{EventStream, Provider, ProviderEvent, StreamRequest};
+        use crate::subagent::AgentFactory;
         use crate::tools::ToolRegistry;
         use async_trait::async_trait;
         use futures::stream;
@@ -7182,7 +7113,7 @@ mod tests {
         }
 
         let approver: Arc<dyn ApprovalSink> = Arc::new(DenyApprover);
-        let factory = ReplAgentFactory {
+        let factory = crate::subagent::ProductionAgentFactory {
             provider: Arc::new(StubProvider),
             base_tools: ToolRegistry::new(),
             model: "test".into(),
@@ -7192,6 +7123,7 @@ mod tests {
             agent_defs: crate::agent_defs::AgentDefsConfig::default(),
             approver: approver.clone(),
             permission_mode: PermissionMode::Ask,
+            cancel: None,
         };
         let child = factory
             .build("go", None, 1)

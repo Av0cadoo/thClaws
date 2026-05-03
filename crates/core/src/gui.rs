@@ -2716,12 +2716,30 @@ pub fn run_gui() {
                         msg.get("to").and_then(|v| v.as_str()),
                         msg.get("text").and_then(|v| v.as_str()),
                     ) {
-                        let team_dir = std::env::current_dir()
-                            .unwrap_or_default()
-                            .join(crate::team::Mailbox::default_dir());
-                        let mailbox = crate::team::Mailbox::new(team_dir);
-                        let tm = crate::team::TeamMessage::new("user", text);
-                        let _ = mailbox.write_to_mailbox(to, tm);
+                        // M6.34 TEAM1: reject path-traversal recipient
+                        // names from the frontend before they reach
+                        // write_to_mailbox. Mailbox validates too, but
+                        // catching here surfaces the error at the IPC
+                        // boundary instead of swallowing it.
+                        if !crate::team::is_valid_agent_name(to) {
+                            // Silently drop — the frontend's only legal
+                            // sources are the team-tab agent list (validated)
+                            // and the lead-typed user message picker.
+                            // Logging via stderr would surface to the
+                            // terminal pane and isn't worth a structured
+                            // error event for an internal path.
+                            eprintln!(
+                                "[team] team_send_message: rejecting invalid recipient '{}'",
+                                to
+                            );
+                        } else {
+                            let team_dir = std::env::current_dir()
+                                .unwrap_or_default()
+                                .join(crate::team::Mailbox::default_dir());
+                            let mailbox = crate::team::Mailbox::new(team_dir);
+                            let tm = crate::team::TeamMessage::new("user", text);
+                            let _ = mailbox.write_to_mailbox(to, tm);
+                        }
                     }
                 }
                 "team_list" => {

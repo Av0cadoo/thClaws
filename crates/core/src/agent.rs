@@ -660,7 +660,7 @@ pub const ESCALATED_MAX_TOKENS: u32 = 64000;
 
 pub struct Agent {
     provider: Arc<dyn Provider>,
-    tools: ToolRegistry,
+    pub(crate) tools: ToolRegistry,
     model: String,
     system: String,
     pub budget_tokens: usize,
@@ -679,7 +679,7 @@ pub struct Agent {
     /// `cancelled().await` and exits with a synthetic error mid-wait.
     /// `None` for tests / non-interactive consumers that don't want
     /// cancellation plumbing.
-    cancel: Option<crate::cancel::CancelToken>,
+    pub(crate) cancel: Option<crate::cancel::CancelToken>,
 }
 
 impl Agent {
@@ -1385,9 +1385,40 @@ pub async fn collect_agent_turn<S>(stream: S) -> Result<AgentTurnOutcome>
 where
     S: Stream<Item = Result<AgentEvent>> + Send,
 {
+    collect_agent_turn_with_cancel(stream, None).await
+}
+
+/// M6.33 SUB4: cancel-aware variant of `collect_agent_turn`. When a
+/// `CancelToken` is wired in, the loop `tokio::select!`s the next
+/// stream event against `cancel.cancelled().await` so a parent ctrl-C
+/// short-circuits the subagent's run instead of waiting for the
+/// subagent to exhaust its iteration budget.
+///
+/// Pre-fix subagents had no cancel observation: a runaway 200-iteration
+/// subagent could burn 10+ minutes uninterruptibly because the parent's
+/// cancel only reached its own retry-backoff sleeps, never propagated
+/// down to the child Agent.
+pub async fn collect_agent_turn_with_cancel<S>(
+    stream: S,
+    cancel: Option<crate::cancel::CancelToken>,
+) -> Result<AgentTurnOutcome>
+where
+    S: Stream<Item = Result<AgentEvent>> + Send,
+{
     let mut out = AgentTurnOutcome::default();
     let mut stream = Box::pin(stream);
-    while let Some(ev) = stream.next().await {
+    loop {
+        let next = if let Some(c) = &cancel {
+            tokio::select! {
+                ev = stream.next() => ev,
+                _ = c.cancelled() => {
+                    return Err(Error::Agent("cancelled by user".into()));
+                }
+            }
+        } else {
+            stream.next().await
+        };
+        let Some(ev) = next else { break };
         match ev? {
             AgentEvent::IterationStart { iteration } => out.iterations = iteration + 1,
             AgentEvent::Text(s) => out.text.push_str(&s),
