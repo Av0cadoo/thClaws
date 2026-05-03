@@ -135,6 +135,19 @@ pub enum ShellInput {
         qualified_name: String,
         arguments: serde_json::Value,
     },
+    /// M6.19 BUG M2: a `session_delete` IPC just removed `id` from
+    /// disk. If the worker's in-flight session matches, it must mint
+    /// a fresh session — otherwise the next save_history would
+    /// re-create the deleted file and the session would resurrect
+    /// with stale state. No-op if `id` doesn't match the current
+    /// session.
+    SessionDeletedExternal { id: String },
+    /// M6.19 BUG M2: a `session_rename` IPC just changed the title of
+    /// `id` on disk. If the worker's in-flight session matches, sync
+    /// the in-memory `state.session.title` so subsequent slash
+    /// commands (e.g. `/sessions`) reflect the new value. No-op if
+    /// `id` doesn't match the current session.
+    SessionRenamedExternal { id: String, title: String },
 }
 
 /// What both tabs render. Each variant maps to a UI affordance:
@@ -932,6 +945,17 @@ async fn run_worker(
                     *g = Some(path);
                 }
                 crate::tools::plan_state::clear();
+                // M6.20 BUG M2: clear any "allow for session" yolo flag
+                // from the prior session — a fresh session must prompt
+                // again rather than silently auto-approving inherited
+                // from session A.
+                state.approver.reset_session_flag();
+                // M6.20 BUG M3: reset permission mode + clear pre-plan
+                // stash. Plan-mode entry from the prior session would
+                // otherwise leak into the fresh session, leaving the
+                // user in Plan with no plan-state to submit against.
+                let _ = crate::permissions::take_pre_plan_mode();
+                crate::permissions::set_current_mode_and_broadcast(state.agent.permission_mode);
                 let _ = events_tx.send(ViewEvent::HistoryReplaced(Vec::new()));
                 let _ = events_tx.send(ViewEvent::SessionListRefresh(build_session_list(
                     &state.session_store,
@@ -980,8 +1004,21 @@ async fn run_worker(
                     // lose a turn or two just because the user clicked
                     // another session.
                     save_history(&state.agent, &mut state.session, &state.session_store);
-                    state.config.model = loaded.model.clone();
+                    // M6.19 BUG M1: capture prev_model BEFORE the
+                    // assignment so rebuild_agent failure can roll the
+                    // config back. Pre-fix the in-memory state.config
+                    // got the new model but the agent kept the old
+                    // provider — subsequent turns ran the old agent
+                    // against config.model that no longer matched, and
+                    // the on-disk settings.json wasn't yet written, so
+                    // restart silently lost the swap.
+                    let prev_model =
+                        std::mem::replace(&mut state.config.model, loaded.model.clone());
                     if let Err(e) = state.rebuild_agent(false) {
+                        // Roll back the config so it matches the still-
+                        // active agent. The user sees the error and the
+                        // session stays on its previous model.
+                        state.config.model = prev_model;
                         let _ = events_tx.send(ViewEvent::ErrorText(format!(
                             "Auto-switch to {} failed: {e}",
                             loaded.model
@@ -1029,6 +1066,14 @@ async fn run_worker(
                 // loaded session also uses, the driver would
                 // immediately force-Failed on its first nudge.
                 crate::tools::plan_state::reset_step_attempts_external();
+                // M6.20 BUG M2 + M3: clear yolo flag and reset
+                // permission mode from the prior session. Pre-fix the
+                // user's "allow for session" decision from session A
+                // continued to auto-approve in session B, and a Plan
+                // mode set in A leaked into B with no plan to submit.
+                state.approver.reset_session_flag();
+                let _ = crate::permissions::take_pre_plan_mode();
+                crate::permissions::set_current_mode_and_broadcast(state.agent.permission_mode);
                 let display = DisplayMessage::from_messages(&state.session.messages);
                 let _ = events_tx.send(ViewEvent::HistoryReplaced(display));
                 // Refresh so the sidebar's "current session" highlight
@@ -1090,11 +1135,37 @@ async fn run_worker(
                 let (content, is_error) = match tool {
                     Some(t) => {
                         let mode = crate::permissions::current_mode();
-                        let needs_approval = matches!(
-                            mode,
-                            crate::permissions::PermissionMode::Ask
-                                | crate::permissions::PermissionMode::Plan,
-                        ) && t.requires_approval(&arguments);
+                        // M6.24 BUG M4: in Plan mode, structurally
+                        // BLOCK mutating widget tool calls — match
+                        // the agent loop's behavior at agent.rs:1133.
+                        // Pre-fix the widget path treated Plan as
+                        // "ask" (prompted via approval modal), but a
+                        // user could click Allow on a widget-side
+                        // button while believing they were just
+                        // exploring. Plan mode = read-only
+                        // exploration, period.
+                        if matches!(mode, crate::permissions::PermissionMode::Plan)
+                            && t.requires_approval(&arguments)
+                        {
+                            let blocked = format!(
+                                "Blocked: {qualified_name} is not available in plan mode. \
+                                 Plan mode is read-only exploration — exit plan mode \
+                                 (sidebar Approve/Cancel) before triggering tool actions \
+                                 from MCP widgets.",
+                            );
+                            let _ = events_tx.send(ViewEvent::McpAppCallToolResult {
+                                request_id,
+                                content: serde_json::json!([{
+                                    "type": "text",
+                                    "text": blocked,
+                                }]),
+                                is_error: true,
+                            });
+                            continue;
+                        }
+                        let needs_approval =
+                            matches!(mode, crate::permissions::PermissionMode::Ask,)
+                                && t.requires_approval(&arguments);
                         let denied = if needs_approval {
                             let req = crate::permissions::ApprovalRequest {
                                 tool_name: qualified_name.clone(),
@@ -1148,6 +1219,56 @@ async fn run_worker(
                     content,
                     is_error,
                 });
+            }
+            ShellInput::SessionDeletedExternal { id } => {
+                // M6.19 BUG M2: a session_delete IPC just removed `id`
+                // from disk. If it matches the worker's current
+                // session, mint a fresh one — otherwise the next
+                // save_history would resurrect the deleted file with
+                // stale state. No-op if the deleted id wasn't
+                // current.
+                if state.session.id == id {
+                    save_history(&state.agent, &mut state.session, &state.session_store);
+                    state.agent.clear_history();
+                    state.session = Session::new(&state.config.model, state.cwd.to_string_lossy());
+                    state.warned_file_size = false;
+                    if let (Some(store), Ok(mut g)) =
+                        (state.session_store.as_ref(), plan_persist_path.lock())
+                    {
+                        let path = store.path_for(&state.session.id);
+                        let _ = state.session.write_header_if_missing(&path);
+                        *g = Some(path);
+                    }
+                    crate::tools::plan_state::clear();
+                    // M6.20 BUG M2 + M3: same reset on external delete
+                    // of the active session (sidebar trash icon while
+                    // in yolo mode would otherwise carry the flag into
+                    // the freshly-minted replacement).
+                    state.approver.reset_session_flag();
+                    let _ = crate::permissions::take_pre_plan_mode();
+                    crate::permissions::set_current_mode_and_broadcast(state.agent.permission_mode);
+                    let _ = events_tx.send(ViewEvent::HistoryReplaced(Vec::new()));
+                    let _ = events_tx.send(ViewEvent::SessionListRefresh(build_session_list(
+                        &state.session_store,
+                        &state.session.id,
+                    )));
+                    let _ = events_tx.send(ViewEvent::SlashOutput(
+                        "(active session was deleted; minted a fresh session)".into(),
+                    ));
+                }
+            }
+            ShellInput::SessionRenamedExternal { id, title } => {
+                // M6.19 BUG M2: keep the worker's in-memory title in
+                // sync after a session_rename IPC. No-op when the
+                // renamed id isn't the current session.
+                if state.session.id == id {
+                    let trimmed = title.trim();
+                    state.session.title = if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    };
+                }
             }
             ShellInput::ReloadConfig => {
                 // Pull the on-disk settings (api_key_set may have just

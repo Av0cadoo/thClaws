@@ -1120,6 +1120,36 @@ impl Agent {
                         }
                     };
 
+                    // M6.20 BUG M1: TodoWrite block fires BEFORE the
+                    // generic mutating-tool block below. Pre-fix the
+                    // generic block ran first (because TodoWrite has
+                    // requires_approval=true), so the model always saw
+                    // the generic "Use Read/Grep/Glob/Ls" message
+                    // instead of this specific "Use SubmitPlan" one.
+                    // TodoWrite is the casual scratchpad outside plan
+                    // mode — letting it coexist with SubmitPlan
+                    // confused the model in tests (it would TodoWrite
+                    // a draft list AND SubmitPlan the same content).
+                    if matches!(permission_mode, PermissionMode::Plan)
+                        && name == "TodoWrite"
+                    {
+                        let blocked = "Blocked: TodoWrite is the casual scratchpad outside plan mode. \
+                                       In plan mode, call SubmitPlan to publish your plan to the \
+                                       sidebar — UpdatePlanStep tracks progress per step.";
+                        result_blocks.push(ContentBlock::ToolResult {
+                            tool_use_id: id.clone(),
+                            content: blocked.to_string().into(),
+                            is_error: true,
+                        });
+                        yield AgentEvent::ToolCallResult {
+                            id: id.clone(),
+                            name: name.clone(),
+                            output: Err(blocked.to_string()),
+                            ui_resource: None,
+                        };
+                        continue;
+                    }
+
                     // Plan-mode block (M2): mutating tools are off-limits
                     // during plan-mode exploration. Return a structured
                     // tool_result the model reads on the next turn and
@@ -1149,32 +1179,6 @@ impl Agent {
                             id: id.clone(),
                             name: name.clone(),
                             output: Err(blocked),
-                            ui_resource: None,
-                        };
-                        continue;
-                    }
-
-                    // TodoWrite is hidden in plan mode — SubmitPlan /
-                    // UpdatePlanStep are the structured replacement and
-                    // letting both coexist confused the model in tests
-                    // (it would TodoWrite a draft list AND SubmitPlan
-                    // the same content). Match by tool name rather than
-                    // a flag to keep it data-free.
-                    if matches!(permission_mode, PermissionMode::Plan)
-                        && name == "TodoWrite"
-                    {
-                        let blocked = "Blocked: TodoWrite is the casual scratchpad outside plan mode. \
-                                       In plan mode, call SubmitPlan to publish your plan to the \
-                                       sidebar — UpdatePlanStep tracks progress per step.";
-                        result_blocks.push(ContentBlock::ToolResult {
-                            tool_use_id: id.clone(),
-                            content: blocked.to_string().into(),
-                            is_error: true,
-                        });
-                        yield AgentEvent::ToolCallResult {
-                            id: id.clone(),
-                            name: name.clone(),
-                            output: Err(blocked.to_string()),
                             ui_resource: None,
                         };
                         continue;
@@ -2385,6 +2389,17 @@ mod tests {
             .unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "ok");
     }
+
+    // M6.20 BUG M1 regression note: the TodoWrite plan-mode block
+    // (agent.rs:1133 area) now fires BEFORE the generic mutating-tool
+    // block, so the model gets the SubmitPlan-specific message instead
+    // of the generic "Use Read/Grep/Glob/Ls" one. A behavioral test
+    // would need to set `permissions::current_mode()` to Plan, which
+    // races other tests reading the same global slot — so this fix is
+    // verified by source inspection + manual repro rather than a
+    // dedicated unit test. The cross-test pollution would cause flakes
+    // in `permission_denied_in_ask_mode_emits_denial_event` and
+    // similar tests that depend on `current_mode() == Ask`.
 
     #[tokio::test]
     async fn max_iterations_short_circuits_runaway_loops() {

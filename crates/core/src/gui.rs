@@ -3035,8 +3035,17 @@ pub fn run_gui() {
                         "error": error,
                     });
                     let _ = proxy_for_ipc.send_event(UserEvent::SessionLoaded(payload.to_string()));
-                    // Broadcast the refreshed list so the sidebar picks up the new title.
                     if ok {
+                        // M6.19 BUG M2: notify the worker so its
+                        // in-memory state.session.title stays in sync
+                        // when the renamed session is the active one.
+                        let _ = shared_for_ipc.input_tx.send(
+                            ShellInput::SessionRenamedExternal {
+                                id: id.to_string(),
+                                title: title.to_string(),
+                            },
+                        );
+                        // Broadcast the refreshed list so the sidebar picks up the new title.
                         let store = SessionStore::default_path().map(SessionStore::new);
                         let list = build_session_list(&store);
                         let _ = proxy_for_ipc.send_event(UserEvent::SessionListRefresh(list));
@@ -3063,6 +3072,16 @@ pub fn run_gui() {
                     });
                     let _ = proxy_for_ipc.send_event(UserEvent::SessionLoaded(payload.to_string()));
                     if ok {
+                        // M6.19 BUG M2: notify the worker so it can
+                        // mint a fresh session if the deleted id was
+                        // the active one. Without this, the next save
+                        // would re-create the file from cached state
+                        // and the "deleted" session would resurrect.
+                        let _ = shared_for_ipc.input_tx.send(
+                            ShellInput::SessionDeletedExternal {
+                                id: id.to_string(),
+                            },
+                        );
                         let store = SessionStore::default_path().map(SessionStore::new);
                         let list = build_session_list(&store);
                         let _ = proxy_for_ipc.send_event(UserEvent::SessionListRefresh(list));

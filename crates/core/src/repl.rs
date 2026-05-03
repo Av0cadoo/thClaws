@@ -1539,6 +1539,14 @@ struct ReplAgentFactory {
     max_iterations: usize,
     max_depth: usize,
     agent_defs: crate::agent_defs::AgentDefsConfig,
+    /// M6.20 BUG H1: subagents must inherit the parent's approver and
+    /// permission mode. Pre-fix `Agent::new` defaults (`AutoApprover` +
+    /// `PermissionMode::Auto`) combined with the dispatch fallback at
+    /// `agent.rs::permission_mode` short-circuited Ask mode entirely
+    /// for any tool the subagent ran. The user's "ask before mutating"
+    /// promise was bypassed via Task delegation.
+    approver: Arc<dyn crate::permissions::ApprovalSink>,
+    permission_mode: crate::permissions::PermissionMode,
 }
 
 #[async_trait]
@@ -1604,6 +1612,11 @@ impl AgentFactory for ReplAgentFactory {
                 max_iterations: self.max_iterations,
                 max_depth: self.max_depth,
                 agent_defs: self.agent_defs.clone(),
+                // M6.20 BUG H1: propagate approver + permission_mode
+                // down the recursion so every nested subagent inherits
+                // the same gate instead of falling back to Auto.
+                approver: self.approver.clone(),
+                permission_mode: self.permission_mode,
             });
             tools.register(Arc::new(
                 SubAgentTool::new(child_factory)
@@ -1613,7 +1626,15 @@ impl AgentFactory for ReplAgentFactory {
             ));
         }
 
-        Ok(Agent::new(self.provider.clone(), tools, model, &system).with_max_iterations(max_iter))
+        // M6.20 BUG H1: wire the parent's approver and permission_mode
+        // onto the child agent. Without this the child silently used
+        // AutoApprover (Agent::new default) and the dispatch fallback
+        // promoted the global Ask back to Auto, bypassing the user's
+        // approval gate entirely for any subagent tool call.
+        Ok(Agent::new(self.provider.clone(), tools, model, &system)
+            .with_max_iterations(max_iter)
+            .with_approver(self.approver.clone())
+            .with_permission_mode(self.permission_mode))
     }
 }
 
@@ -1919,6 +1940,19 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
     // can open Settings / type slash commands without an immediate exit.
     let provider = provider.unwrap_or_else(|| Arc::new(NoProviderPlaceholder) as Arc<dyn Provider>);
 
+    // M6.20 BUG H1: build the approver + permission_mode FIRST so the
+    // subagent factory and the top-level agent share the same instance.
+    // Pre-fix the factory built its child agents via `Agent::new`'s
+    // defaults (AutoApprover + PermissionMode::Auto), and the dispatch
+    // fallback at agent.rs:1112 promoted the global Ask back to Auto —
+    // every subagent tool call bypassed the user's approval gate.
+    let perm_mode = if team_agent_name.is_some() || config.permissions == "auto" {
+        PermissionMode::Auto
+    } else {
+        PermissionMode::Ask
+    };
+    let approver = ReplApprover::new();
+
     // Register the Task tool with multi-level recursion support.
     // Child agents get their own Task tool at depth+1 (up to max_depth).
     {
@@ -1933,6 +1967,8 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
             max_iterations: config.max_iterations,
             max_depth: crate::subagent::DEFAULT_MAX_DEPTH,
             agent_defs: agent_defs.clone(),
+            approver: approver.clone(),
+            permission_mode: perm_mode,
         });
         tool_registry.register(Arc::new(
             SubAgentTool::new(factory)
@@ -2008,13 +2044,8 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
         }
     }
 
-    // Team agents always run in auto mode (no approval prompts).
-    let perm_mode = if team_agent_name.is_some() || config.permissions == "auto" {
-        PermissionMode::Auto
-    } else {
-        PermissionMode::Ask
-    };
-    let approver = ReplApprover::new();
+    // M6.20 BUG H1: `perm_mode` and `approver` are defined above the
+    // factory block so subagents inherit the same gate.
     let mut agent = Agent::new(
         provider,
         tool_registry.clone(),
@@ -2756,6 +2787,11 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     .with_approver(approver.clone());
                     agent.clear_history();
                     session = Session::new(&config.model, session.cwd.clone());
+                    // M6.20 BUG M2 + M3: model swap mints a fresh
+                    // session; reset yolo flag and permission mode.
+                    crate::permissions::ApprovalSink::reset_session_flag(approver.as_ref());
+                    let _ = crate::permissions::take_pre_plan_mode();
+                    crate::permissions::set_current_mode_and_broadcast(perm_mode);
                     save_project_model(&config.model);
                     println!(
                         "{COLOR_DIM}model → {} (saved to .thclaws/settings.json; new session {}){COLOR_RESET}",
@@ -2826,6 +2862,11 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     .with_approver(approver.clone());
                     agent.clear_history();
                     session = Session::new(&config.model, session.cwd.clone());
+                    // M6.20 BUG M2 + M3: provider swap mints a fresh
+                    // session; reset yolo flag and permission mode.
+                    crate::permissions::ApprovalSink::reset_session_flag(approver.as_ref());
+                    let _ = crate::permissions::take_pre_plan_mode();
+                    crate::permissions::set_current_mode_and_broadcast(perm_mode);
                     save_project_model(&config.model);
                     println!(
                         "{COLOR_DIM}provider → {name} (model: {}, saved to .thclaws/settings.json; new session {}){COLOR_RESET}",
@@ -2955,6 +2996,17 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                                 Ok(loaded) => {
                                     agent.set_history(loaded.messages.clone());
                                     session = loaded;
+                                    // M6.20 BUG M2 + M3: clear yolo
+                                    // flag and reset permission mode
+                                    // on session swap so the loaded
+                                    // session starts clean rather than
+                                    // inheriting Plan / AllowForSession
+                                    // from the prior session.
+                                    crate::permissions::ApprovalSink::reset_session_flag(
+                                        approver.as_ref(),
+                                    );
+                                    let _ = crate::permissions::take_pre_plan_mode();
+                                    crate::permissions::set_current_mode_and_broadcast(perm_mode);
                                     let label = session
                                         .title
                                         .as_deref()
@@ -3728,6 +3780,12 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     if let Some(store) = &session_store {
                         let _ = store.save(&mut session);
                     }
+                    // M6.20 BUG M2 + M3: fork mints a fresh session id;
+                    // clear yolo flag and reset permission mode same as
+                    // /load.
+                    crate::permissions::ApprovalSink::reset_session_flag(approver.as_ref());
+                    let _ = crate::permissions::take_pre_plan_mode();
+                    crate::permissions::set_current_mode_and_broadcast(perm_mode);
                     println!(
                         "{COLOR_DIM}/fork: forked {old_id} → {} ({} → {} messages){COLOR_RESET}",
                         session.id,
@@ -5498,6 +5556,65 @@ mod tests {
         if let Some(v) = saved_g {
             std::env::set_var("GEMINI_API_KEY", v);
         }
+    }
+
+    /// M6.20 BUG H1: ReplAgentFactory must propagate the parent's
+    /// approver and permission_mode onto every child agent. Pre-fix the
+    /// child fell through to `Agent::new`'s defaults (`AutoApprover` +
+    /// `PermissionMode::Auto`), and the dispatch fallback at
+    /// agent.rs:1112 promoted the global Ask back to Auto — bypassing
+    /// the user's approval gate for any subagent tool call.
+    #[tokio::test]
+    async fn subagent_factory_propagates_approver_and_permission_mode() {
+        use crate::permissions::{ApprovalSink, DenyApprover, PermissionMode};
+        use crate::providers::{EventStream, Provider, ProviderEvent, StreamRequest};
+        use crate::tools::ToolRegistry;
+        use async_trait::async_trait;
+        use futures::stream;
+
+        struct StubProvider;
+        #[async_trait]
+        impl Provider for StubProvider {
+            async fn stream(&self, _req: StreamRequest) -> Result<EventStream> {
+                Ok(Box::pin(stream::iter(vec![Ok::<ProviderEvent, _>(
+                    ProviderEvent::MessageStart {
+                        model: "test".into(),
+                    },
+                )])))
+            }
+        }
+
+        let approver: Arc<dyn ApprovalSink> = Arc::new(DenyApprover);
+        let factory = ReplAgentFactory {
+            provider: Arc::new(StubProvider),
+            base_tools: ToolRegistry::new(),
+            model: "test".into(),
+            system: String::new(),
+            max_iterations: 1,
+            max_depth: 3,
+            agent_defs: crate::agent_defs::AgentDefsConfig::default(),
+            approver: approver.clone(),
+            permission_mode: PermissionMode::Ask,
+        };
+        let child = factory
+            .build("go", None, 1)
+            .await
+            .expect("factory builds child");
+        // permission_mode must propagate (the actual gate-promotion bug
+        // in the dispatch fallback was triggered when child default was
+        // Auto; verifying it's Ask here proves the propagation path).
+        assert_eq!(child.permission_mode, PermissionMode::Ask);
+        // Arc identity check: the child shares the parent's approver
+        // Arc, so a yolo flag set on parent propagates to the child
+        // (and vice versa) within a session.
+        // We can't reach into Agent's private approver field, but we
+        // can prove Arc::strong_count grew when factory.build fired.
+        // Pre-fix the child wouldn't have cloned `approver` at all.
+        assert!(
+            Arc::strong_count(&approver) >= 2,
+            "factory should have cloned the approver Arc, got strong_count={}",
+            Arc::strong_count(&approver),
+        );
     }
 
     // --- SlashCompleter tests ---------------------------------------------

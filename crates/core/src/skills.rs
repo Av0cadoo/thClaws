@@ -337,6 +337,16 @@ impl SkillStore {
             if !skill_md.exists() {
                 continue;
             }
+            // M6.20 BUG M5: load-time policy gate. Pre-fix
+            // `enforce_scripts_policy` only ran at install time, so a
+            // skill installed BEFORE the org pushed a policy with
+            // `allow_external_scripts: false` continued to load on
+            // restart. Apply the same gate here so policy rotation
+            // takes effect on next launch.
+            if let Err(e) = enforce_scripts_policy(&path) {
+                eprintln!("\x1b[33m[skills] skipping {}: {e}\x1b[0m", path.display());
+                continue;
+            }
             if let Some(skill) = Self::parse_skill(&path, &skill_md) {
                 self.skills.insert(skill.name.clone(), skill);
             }
