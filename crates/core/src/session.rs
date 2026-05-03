@@ -174,7 +174,9 @@ impl Session {
             std::fs::create_dir_all(parent)?;
         }
         let needs_header = !path.exists()
-            || std::fs::metadata(path).map(|m| m.len() == 0).unwrap_or(true);
+            || std::fs::metadata(path)
+                .map(|m| m.len() == 0)
+                .unwrap_or(true);
         if !needs_header {
             return Ok(());
         }

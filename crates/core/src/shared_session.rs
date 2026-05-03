@@ -1129,10 +1129,7 @@ async fn run_worker(
                                     // image2image returns a URL
                                     // string, so text-only suffices.
                                     let text = result.to_text();
-                                    (
-                                        serde_json::json!([{ "type": "text", "text": text }]),
-                                        false,
-                                    )
+                                    (serde_json::json!([{ "type": "text", "text": text }]), false)
                                 }
                                 Err(e) => (
                                     serde_json::json!([{ "type": "text", "text": format!("error: {e}") }]),

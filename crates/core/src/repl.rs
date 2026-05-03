@@ -2683,7 +2683,10 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                 SlashCommand::Model(new_model) => {
                     if new_model.is_empty() {
                         let provider_name = config.detect_provider().unwrap_or("unknown");
-                        println!("{COLOR_DIM}model: {} (provider: {}){COLOR_RESET}", config.model, provider_name);
+                        println!(
+                            "{COLOR_DIM}model: {} (provider: {}){COLOR_RESET}",
+                            config.model, provider_name
+                        );
                         continue;
                     }
                     // Resolve short aliases ("sonnet" → "claude-sonnet-4-6",
@@ -2760,9 +2763,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     );
                 }
                 SlashCommand::Config { key, value } => {
-                    println!(
-                        "{COLOR_DIM}(session-only) {key} = {value}{COLOR_RESET}"
-                    );
+                    println!("{COLOR_DIM}(session-only) {key} = {value}{COLOR_RESET}");
                 }
                 SlashCommand::Providers => {
                     let current = config.detect_provider_kind().ok();
@@ -2838,9 +2839,9 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                             "{COLOR_DIM}catalogue refreshed: {} models (source: {}){COLOR_RESET}",
                             out.model_count, out.source
                         ),
-                        Err(e) => println!(
-                            "{COLOR_YELLOW}catalogue refresh failed: {e}{COLOR_RESET}"
-                        ),
+                        Err(e) => {
+                            println!("{COLOR_YELLOW}catalogue refresh failed: {e}{COLOR_RESET}")
+                        }
                     }
                 }
                 SlashCommand::ModelsSetContext { key, size, project } => {
@@ -2902,10 +2903,9 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                             Ok(models) => {
                                 for m in models {
                                     match m.display_name {
-                                        Some(dn) => println!(
-                                            "{COLOR_DIM}  {} — {}{COLOR_RESET}",
-                                            m.id, dn
-                                        ),
+                                        Some(dn) => {
+                                            println!("{COLOR_DIM}  {} — {}{COLOR_RESET}", m.id, dn)
+                                        }
                                         None => println!("{COLOR_DIM}  {}{COLOR_RESET}", m.id),
                                     }
                                 }
@@ -2921,15 +2921,12 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     session.sync(agent.history_snapshot());
                     match &session_store {
                         Some(store) => match store.save(&mut session) {
-                            Ok(path) => println!(
-                                "{COLOR_DIM}saved → {}{COLOR_RESET}",
-                                path.display()
-                            ),
+                            Ok(path) => {
+                                println!("{COLOR_DIM}saved → {}{COLOR_RESET}", path.display())
+                            }
                             Err(e) => println!("{COLOR_YELLOW}save failed: {e}{COLOR_RESET}"),
                         },
-                        None => println!(
-                            "{COLOR_YELLOW}no session store (set $HOME){COLOR_RESET}"
-                        ),
+                        None => println!("{COLOR_YELLOW}no session store (set $HOME){COLOR_RESET}"),
                     }
                 }
                 SlashCommand::Load(name_or_id) => {
@@ -2973,9 +2970,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                                 }
                             }
                         }
-                        None => println!(
-                            "{COLOR_YELLOW}no session store (set $HOME){COLOR_RESET}"
-                        ),
+                        None => println!("{COLOR_YELLOW}no session store (set $HOME){COLOR_RESET}"),
                     }
                 }
                 SlashCommand::Rename(title) => match &session_store {
@@ -2992,20 +2987,18 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                             Ok(updated) => {
                                 session.title = updated.title.clone();
                                 match &session.title {
-                                    Some(t) => println!(
-                                        "{COLOR_DIM}session renamed → {t}{COLOR_RESET}"
-                                    ),
-                                    None => println!(
-                                        "{COLOR_DIM}session title cleared{COLOR_RESET}"
-                                    ),
+                                    Some(t) => {
+                                        println!("{COLOR_DIM}session renamed → {t}{COLOR_RESET}")
+                                    }
+                                    None => {
+                                        println!("{COLOR_DIM}session title cleared{COLOR_RESET}")
+                                    }
                                 }
                             }
                             Err(e) => println!("{COLOR_YELLOW}rename failed: {e}{COLOR_RESET}"),
                         }
                     }
-                    None => println!(
-                        "{COLOR_YELLOW}no session store (set $HOME){COLOR_RESET}"
-                    ),
+                    None => println!("{COLOR_YELLOW}no session store (set $HOME){COLOR_RESET}"),
                 },
                 SlashCommand::Sessions => match &session_store {
                     Some(store) => match store.list() {
@@ -3023,9 +3016,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         }
                         Err(e) => println!("{COLOR_YELLOW}list failed: {e}{COLOR_RESET}"),
                     },
-                    None => println!(
-                        "{COLOR_YELLOW}no session store (set $HOME){COLOR_RESET}"
-                    ),
+                    None => println!("{COLOR_YELLOW}no session store (set $HOME){COLOR_RESET}"),
                 },
                 SlashCommand::MemoryList => match &memory_store {
                     Some(store) => match store.list() {
@@ -3047,17 +3038,12 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                                 } else {
                                     e.description
                                 };
-                                println!(
-                                    "{COLOR_DIM}  {}{} — {}{COLOR_RESET}",
-                                    e.name, ty, desc
-                                );
+                                println!("{COLOR_DIM}  {}{} — {}{COLOR_RESET}", e.name, ty, desc);
                             }
                         }
                         Err(e) => println!("{COLOR_YELLOW}memory list failed: {e}{COLOR_RESET}"),
                     },
-                    None => println!(
-                        "{COLOR_YELLOW}no memory store (set $HOME){COLOR_RESET}"
-                    ),
+                    None => println!("{COLOR_YELLOW}no memory store (set $HOME){COLOR_RESET}"),
                 },
                 SlashCommand::MemoryRead(name) => {
                     if name.is_empty() {
@@ -3067,10 +3053,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     match &memory_store {
                         Some(store) => match store.get(&name) {
                             Some(entry) => {
-                                println!(
-                                    "{COLOR_DIM}── {} ─────{COLOR_RESET}",
-                                    entry.name
-                                );
+                                println!("{COLOR_DIM}── {} ─────{COLOR_RESET}", entry.name);
                                 if !entry.description.is_empty() {
                                     println!(
                                         "{COLOR_DIM}description: {}{COLOR_RESET}",
@@ -3086,9 +3069,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                                 "{COLOR_YELLOW}memory entry not found: {name}{COLOR_RESET}"
                             ),
                         },
-                        None => println!(
-                            "{COLOR_YELLOW}no memory store (set $HOME){COLOR_RESET}"
-                        ),
+                        None => println!("{COLOR_YELLOW}no memory store (set $HOME){COLOR_RESET}"),
                     }
                 }
                 SlashCommand::Tasks => {
@@ -3179,8 +3160,10 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                             println!("{COLOR_DIM}{line}{COLOR_RESET}");
                         }
                         if mem_index_bytes > 0 {
-                            let mut line =
-                                format!("  MEMORY.md              {}", crate::util::format_bytes(mem_index_bytes));
+                            let mut line = format!(
+                                "  MEMORY.md              {}",
+                                crate::util::format_bytes(mem_index_bytes)
+                            );
                             if mem_index_bytes > BUDGET_MEMORY_INDEX {
                                 line.push_str(&format!(
                                     "  ⚠ over {} cap",
@@ -3216,7 +3199,10 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         if v.git_dirty { "+dirty" } else { "" },
                         v.git_branch
                     );
-                    println!("{COLOR_DIM}built:    {} ({}){COLOR_RESET}", v.build_time, v.build_profile);
+                    println!(
+                        "{COLOR_DIM}built:    {} ({}){COLOR_RESET}",
+                        v.build_time, v.build_profile
+                    );
                 }
                 SlashCommand::Cwd => {
                     println!(
@@ -3229,7 +3215,9 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                 SlashCommand::Thinking(budget_str) => {
                     if budget_str.is_empty() {
                         let current = config.thinking_budget.unwrap_or(0);
-                        println!("{COLOR_DIM}thinking budget: {current} tokens (0 = off){COLOR_RESET}");
+                        println!(
+                            "{COLOR_DIM}thinking budget: {current} tokens (0 = off){COLOR_RESET}"
+                        );
                     } else {
                         match budget_str.parse::<u32>() {
                             Ok(0) => {
@@ -3241,7 +3229,9 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                                 println!("{COLOR_DIM}thinking budget → {n} tokens{COLOR_RESET}");
                             }
                             Err(_) => {
-                                println!("{COLOR_YELLOW}usage: /thinking BUDGET (integer){COLOR_RESET}");
+                                println!(
+                                    "{COLOR_YELLOW}usage: /thinking BUDGET (integer){COLOR_RESET}"
+                                );
                             }
                         }
                     }
@@ -3268,10 +3258,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                                 p.path.display()
                             );
                             if !p.source.is_empty() {
-                                println!(
-                                    "{COLOR_DIM}    source: {}{COLOR_RESET}",
-                                    p.source
-                                );
+                                println!("{COLOR_DIM}    source: {}{COLOR_RESET}", p.source);
                             }
                         }
                     }
@@ -3297,22 +3284,14 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                                         parts.push(format!("{} skill dir(s)", m.skills.len()));
                                     }
                                     if !m.commands.is_empty() {
-                                        parts.push(format!(
-                                            "{} command dir(s)",
-                                            m.commands.len()
-                                        ));
+                                        parts.push(format!("{} command dir(s)", m.commands.len()));
                                     }
                                     if !m.agents.is_empty() {
-                                        parts.push(format!(
-                                            "{} agent dir(s)",
-                                            m.agents.len()
-                                        ));
+                                        parts.push(format!("{} agent dir(s)", m.agents.len()));
                                     }
                                     if !m.mcp_servers.is_empty() {
-                                        parts.push(format!(
-                                            "{} MCP server(s)",
-                                            m.mcp_servers.len()
-                                        ));
+                                        parts
+                                            .push(format!("{} MCP server(s)", m.mcp_servers.len()));
                                     }
                                     if parts.is_empty() {
                                         "no contributions".to_string()
@@ -3353,11 +3332,8 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                             // longer accurate.
                             if let Some(m) = manifest.as_ref() {
                                 if !m.mcp_servers.is_empty() {
-                                    let names: Vec<&str> = m
-                                        .mcp_servers
-                                        .keys()
-                                        .map(String::as_str)
-                                        .collect();
+                                    let names: Vec<&str> =
+                                        m.mcp_servers.keys().map(String::as_str).collect();
                                     println!(
                                         "{COLOR_YELLOW}⚠  restart {} to spawn {} new MCP server(s): {}{COLOR_RESET}",
                                         crate::branding::current().name,
@@ -3393,9 +3369,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                                     *store = refreshed;
                                 }
                             }
-                            println!(
-                                "{COLOR_DIM}plugin '{name}' enabled{COLOR_RESET}"
-                            );
+                            println!("{COLOR_DIM}plugin '{name}' enabled{COLOR_RESET}");
                             if let Some(names) = plugin_mcp_server_names(&name) {
                                 println!(
                                     "{COLOR_YELLOW}⚠  restart {} to spawn {} MCP server(s): {}{COLOR_RESET}",
@@ -3425,9 +3399,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                                     *store = refreshed;
                                 }
                             }
-                            println!(
-                                "{COLOR_DIM}plugin '{name}' disabled{COLOR_RESET}"
-                            );
+                            println!("{COLOR_DIM}plugin '{name}' disabled{COLOR_RESET}");
                             if let Some(names) = mcp_to_drop {
                                 println!(
                                     "{COLOR_YELLOW}⚠  restart {} to drop {} MCP server(s) it contributed: {}{COLOR_RESET}",
@@ -3528,9 +3500,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                                 "{COLOR_DIM}no zombie entries — registry is clean{COLOR_RESET}"
                             );
                         } else {
-                            println!(
-                                "{COLOR_DIM}removed zombie entries:{COLOR_RESET}"
-                            );
+                            println!("{COLOR_DIM}removed zombie entries:{COLOR_RESET}");
                             for n in &proj {
                                 println!("{COLOR_DIM}  - {n} (project){COLOR_RESET}");
                             }
@@ -3570,9 +3540,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                                     *store = refreshed;
                                 }
                             }
-                            println!(
-                                "{COLOR_DIM}plugin '{name}' removed{COLOR_RESET}"
-                            );
+                            println!("{COLOR_DIM}plugin '{name}' removed{COLOR_RESET}");
                             if let Some(names) = mcp_to_drop {
                                 println!(
                                     "{COLOR_YELLOW}⚠  restart {} to fully drop {} MCP server(s) it was running: {}{COLOR_RESET}",
@@ -3588,9 +3556,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                             );
                         }
                         Err(e) => {
-                            println!(
-                                "{COLOR_YELLOW}plugin remove failed: {e}{COLOR_RESET}"
-                            );
+                            println!("{COLOR_YELLOW}plugin remove failed: {e}{COLOR_RESET}");
                         }
                     }
                 }
@@ -3742,9 +3708,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     let provider = match crate::repl::build_provider(&config) {
                         Ok(p) => p,
                         Err(e) => {
-                            println!(
-                                "{COLOR_YELLOW}/fork: can't build provider: {e}{COLOR_RESET}"
-                            );
+                            println!("{COLOR_YELLOW}/fork: can't build provider: {e}{COLOR_RESET}");
                             continue;
                         }
                     };
@@ -3784,7 +3748,10 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         if v.git_dirty { "+dirty" } else { "" },
                         v.git_branch
                     );
-                    println!("{COLOR_DIM}built:      {} ({}){COLOR_RESET}", v.build_time, v.build_profile);
+                    println!(
+                        "{COLOR_DIM}built:      {} ({}){COLOR_RESET}",
+                        v.build_time, v.build_profile
+                    );
                     println!("{COLOR_DIM}model:      {}{COLOR_RESET}", config.model);
                     println!(
                         "{COLOR_DIM}provider:   {}{COLOR_RESET}",
@@ -3792,22 +3759,25 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     );
                     println!(
                         "{COLOR_DIM}api key:    {}{COLOR_RESET}",
-                        if config.api_key_from_env().is_some() { "set ✓" } else { "MISSING ✗" }
-                    );
-                    println!(
-                        "{COLOR_DIM}config:     {}{COLOR_RESET}",
-                        {
-                            let paths = AppConfig::user_config_paths();
-                            paths.iter()
-                                .find(|p| p.exists())
-                                .map(|p| format!("{} ✓", p.display()))
-                                .unwrap_or_else(|| {
-                                    paths.first()
-                                        .map(|p| format!("{} (not found)", p.display()))
-                                        .unwrap_or_else(|| "none".into())
-                                })
+                        if config.api_key_from_env().is_some() {
+                            "set ✓"
+                        } else {
+                            "MISSING ✗"
                         }
                     );
+                    println!("{COLOR_DIM}config:     {}{COLOR_RESET}", {
+                        let paths = AppConfig::user_config_paths();
+                        paths
+                            .iter()
+                            .find(|p| p.exists())
+                            .map(|p| format!("{} ✓", p.display()))
+                            .unwrap_or_else(|| {
+                                paths
+                                    .first()
+                                    .map(|p| format!("{} (not found)", p.display()))
+                                    .unwrap_or_else(|| "none".into())
+                            })
+                    });
                     println!(
                         "{COLOR_DIM}sandbox:    {}{COLOR_RESET}",
                         crate::sandbox::Sandbox::root()
@@ -3823,12 +3793,20 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     println!(
                         "{COLOR_DIM}memory:     {}{COLOR_RESET}",
                         crate::memory::MemoryStore::default_path()
-                            .map(|p| if p.exists() { format!("{} ✓", p.display()) } else { format!("{} (empty)", p.display()) })
+                            .map(|p| if p.exists() {
+                                format!("{} ✓", p.display())
+                            } else {
+                                format!("{} (empty)", p.display())
+                            })
                             .unwrap_or_else(|| "none".into())
                     );
                     println!(
                         "{COLOR_DIM}tmux:       {}{COLOR_RESET}",
-                        if crate::team::has_tmux() { "available ✓" } else { "not found" }
+                        if crate::team::has_tmux() {
+                            "available ✓"
+                        } else {
+                            "not found"
+                        }
                     );
                     println!(
                         "{COLOR_DIM}tools:      {} registered{COLOR_RESET}",
@@ -3854,12 +3832,16 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         match mode.as_str() {
                             "auto" | "yolo" => {
                                 agent.permission_mode = PermissionMode::Auto;
-                                crate::permissions::set_current_mode_and_broadcast(PermissionMode::Auto);
+                                crate::permissions::set_current_mode_and_broadcast(
+                                    PermissionMode::Auto,
+                                );
                                 println!("{COLOR_DIM}permissions → auto (no prompts){COLOR_RESET}");
                             }
                             "ask" | "default" => {
                                 agent.permission_mode = PermissionMode::Ask;
-                                crate::permissions::set_current_mode_and_broadcast(PermissionMode::Ask);
+                                crate::permissions::set_current_mode_and_broadcast(
+                                    PermissionMode::Ask,
+                                );
                                 println!("{COLOR_DIM}permissions → ask{COLOR_RESET}");
                             }
                             _ => {
@@ -3877,7 +3859,9 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                                 println!("{COLOR_DIM}Already in plan mode.{COLOR_RESET}");
                             } else {
                                 crate::permissions::stash_pre_plan_mode(cur);
-                                crate::permissions::set_current_mode_and_broadcast(PermissionMode::Plan);
+                                crate::permissions::set_current_mode_and_broadcast(
+                                    PermissionMode::Plan,
+                                );
                                 println!(
                                     "{COLOR_DIM}plan mode active — mutating tools blocked. Ask the model to call SubmitPlan.{COLOR_RESET}"
                                 );
@@ -3895,18 +3879,16 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         "status" | "show" => {
                             let plan = crate::tools::plan_state::get();
                             let summary = match plan {
-                                Some(p) => format!(
-                                    " — active plan {} ({} step(s))",
-                                    p.id,
-                                    p.steps.len()
-                                ),
+                                Some(p) => {
+                                    format!(" — active plan {} ({} step(s))", p.id, p.steps.len())
+                                }
                                 None => String::new(),
                             };
-                            println!(
-                                "{COLOR_DIM}permission mode: {cur:?}{summary}{COLOR_RESET}"
-                            );
+                            println!("{COLOR_DIM}permission mode: {cur:?}{summary}{COLOR_RESET}");
                         }
-                        _ => println!("{COLOR_YELLOW}usage: /plan [enter | exit | status]{COLOR_RESET}"),
+                        _ => println!(
+                            "{COLOR_YELLOW}usage: /plan [enter | exit | status]{COLOR_RESET}"
+                        ),
                     }
                 }
                 SlashCommand::Sso { sub } => {
@@ -3974,20 +3956,27 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         let claude_prefix = home.join(".claude/skills");
 
                         let level_of = |dir: &std::path::Path| -> &str {
-                            if dir.starts_with(&project_prefix) { "project" }
-                            else if dir.starts_with(&user_prefix) { "user" }
-                            else if dir.starts_with(&claude_prefix) { "claude" }
-                            else { "?" }
+                            if dir.starts_with(&project_prefix) {
+                                "project"
+                            } else if dir.starts_with(&user_prefix) {
+                                "user"
+                            } else if dir.starts_with(&claude_prefix) {
+                                "claude"
+                            } else {
+                                "?"
+                            }
                         };
 
                         let mut rows: Vec<(&str, &str, bool)> = store
                             .skills
                             .values()
-                            .map(|s| (
-                                s.name.as_str(),
-                                level_of(&s.dir),
-                                s.dir.join("scripts").exists(),
-                            ))
+                            .map(|s| {
+                                (
+                                    s.name.as_str(),
+                                    level_of(&s.dir),
+                                    s.dir.join("scripts").exists(),
+                                )
+                            })
                             .collect();
                         rows.sort_by_key(|r| r.0);
                         for (name, level, has_scripts) in &rows {
@@ -4012,9 +4001,13 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         .unwrap_or_default();
                     let user_prefix = home.join(".config/thclaws/skills");
                     let skill_level = |dir: &std::path::Path| -> &str {
-                        if dir.starts_with(&project_prefix) { "project" }
-                        else if dir.starts_with(&user_prefix) { "user" }
-                        else { "system" }
+                        if dir.starts_with(&project_prefix) {
+                            "project"
+                        } else if dir.starts_with(&user_prefix) {
+                            "user"
+                        } else {
+                            "system"
+                        }
                     };
                     match store.get(&name) {
                         Some(skill) => {
@@ -4033,14 +4026,8 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                                     skill.when_to_use
                                 );
                             }
-                            println!(
-                                "{COLOR_DIM}level: {}{COLOR_RESET}",
-                                skill_level(&skill.dir)
-                            );
-                            println!(
-                                "{COLOR_DIM}path:  {}{COLOR_RESET}",
-                                skill.dir.display()
-                            );
+                            println!("{COLOR_DIM}level: {}{COLOR_RESET}", skill_level(&skill.dir));
+                            println!("{COLOR_DIM}path:  {}{COLOR_RESET}", skill.dir.display());
                         }
                         None => {
                             println!(
@@ -4049,7 +4036,11 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         }
                     }
                 }
-                SlashCommand::SkillInstall { git_url, name, project } => {
+                SlashCommand::SkillInstall {
+                    git_url,
+                    name,
+                    project,
+                } => {
                     // Resolve the argument: if it parses as a URL (http/https/git@/.zip)
                     // or a `<repo>#<branch>:<subpath>` extension, install
                     // directly. Otherwise treat it as a marketplace name
@@ -4059,7 +4050,13 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     if let Some(msg) = abort_msg {
                         println!("{COLOR_YELLOW}{msg}{COLOR_RESET}");
                     } else {
-                        match crate::skills::install_from_url(&effective_url, effective_name.as_deref(), project).await {
+                        match crate::skills::install_from_url(
+                            &effective_url,
+                            effective_name.as_deref(),
+                            project,
+                        )
+                        .await
+                        {
                             Ok(report) => {
                                 for line in report {
                                     println!("{COLOR_DIM}  {line}{COLOR_RESET}");
@@ -4110,8 +4107,10 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         mp.skills.len(),
                     );
                     // Group by category so the listing reads like a catalog.
-                    let mut by_cat: std::collections::BTreeMap<String, Vec<&crate::marketplace::MarketplaceSkill>> =
-                        std::collections::BTreeMap::new();
+                    let mut by_cat: std::collections::BTreeMap<
+                        String,
+                        Vec<&crate::marketplace::MarketplaceSkill>,
+                    > = std::collections::BTreeMap::new();
                     for s in &mp.skills {
                         let cat = if s.category.is_empty() {
                             "other".to_string()
@@ -4230,16 +4229,26 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         mp.source,
                         mp.mcp_servers.len(),
                     );
-                    let mut by_cat: std::collections::BTreeMap<String, Vec<&crate::marketplace::MarketplaceMcpServer>> =
-                        std::collections::BTreeMap::new();
+                    let mut by_cat: std::collections::BTreeMap<
+                        String,
+                        Vec<&crate::marketplace::MarketplaceMcpServer>,
+                    > = std::collections::BTreeMap::new();
                     for s in &mp.mcp_servers {
-                        let cat = if s.category.is_empty() { "other".into() } else { s.category.clone() };
+                        let cat = if s.category.is_empty() {
+                            "other".into()
+                        } else {
+                            s.category.clone()
+                        };
                         by_cat.entry(cat).or_default().push(s);
                     }
                     for (cat, servers) in by_cat {
                         println!("{COLOR_DIM}── {cat} ──{COLOR_RESET}");
                         for s in servers {
-                            let tport = if s.transport == "sse" { " [hosted]" } else { "" };
+                            let tport = if s.transport == "sse" {
+                                " [hosted]"
+                            } else {
+                                ""
+                            };
                             let tags = crate::marketplace::entry_tags(s);
                             println!(
                                 "{COLOR_DIM}  {:<24}{tport}{tags} — {}{COLOR_RESET}",
@@ -4260,11 +4269,15 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                             "{COLOR_DIM}no matches for '{query}' — try /mcp marketplace{COLOR_RESET}"
                         );
                     } else {
-                        println!("{COLOR_DIM}{} match(es) for '{query}':{COLOR_RESET}", hits.len());
+                        println!(
+                            "{COLOR_DIM}{} match(es) for '{query}':{COLOR_RESET}",
+                            hits.len()
+                        );
                         for s in hits {
                             println!(
                                 "{COLOR_DIM}  {:<24} — {}{COLOR_RESET}",
-                                s.name, s.short_line()
+                                s.name,
+                                s.short_line()
                             );
                         }
                     }
@@ -4339,10 +4352,16 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         mp.source,
                         mp.plugins.len(),
                     );
-                    let mut by_cat: std::collections::BTreeMap<String, Vec<&crate::marketplace::MarketplacePlugin>> =
-                        std::collections::BTreeMap::new();
+                    let mut by_cat: std::collections::BTreeMap<
+                        String,
+                        Vec<&crate::marketplace::MarketplacePlugin>,
+                    > = std::collections::BTreeMap::new();
                     for p in &mp.plugins {
-                        let cat = if p.category.is_empty() { "other".into() } else { p.category.clone() };
+                        let cat = if p.category.is_empty() {
+                            "other".into()
+                        } else {
+                            p.category.clone()
+                        };
                         by_cat.entry(cat).or_default().push(p);
                     }
                     for (cat, plugins) in by_cat {
@@ -4368,11 +4387,15 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                             "{COLOR_DIM}no matches for '{query}' — try /plugin marketplace{COLOR_RESET}"
                         );
                     } else {
-                        println!("{COLOR_DIM}{} match(es) for '{query}':{COLOR_RESET}", hits.len());
+                        println!(
+                            "{COLOR_DIM}{} match(es) for '{query}':{COLOR_RESET}",
+                            hits.len()
+                        );
                         for p in hits {
                             println!(
                                 "{COLOR_DIM}  {:<24} — {}{COLOR_RESET}",
-                                p.name, p.short_line()
+                                p.name,
+                                p.short_line()
                             );
                         }
                     }
@@ -4412,8 +4435,12 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                             .map(|o| o.status.success())
                             .unwrap_or(false);
                         if exists {
-                            println!("{COLOR_DIM}attaching to tmux session '{session}'...{COLOR_RESET}");
-                            println!("{COLOR_DIM}(press Ctrl+B then D to detach back here){COLOR_RESET}");
+                            println!(
+                                "{COLOR_DIM}attaching to tmux session '{session}'...{COLOR_RESET}"
+                            );
+                            println!(
+                                "{COLOR_DIM}(press Ctrl+B then D to detach back here){COLOR_RESET}"
+                            );
                             let _ = std::process::Command::new("tmux")
                                 .args(["attach", "-t", session])
                                 .status();
@@ -4426,7 +4453,9 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                                     println!("{COLOR_DIM}no team agents found{COLOR_RESET}");
                                 }
                                 Ok(agents) => {
-                                    println!("{COLOR_DIM}Team agents (no tmux session):{COLOR_RESET}");
+                                    println!(
+                                        "{COLOR_DIM}Team agents (no tmux session):{COLOR_RESET}"
+                                    );
                                     for a in &agents {
                                         let task = a.current_task.as_deref().unwrap_or("-");
                                         println!(
@@ -4445,9 +4474,8 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     }
                 }
                 SlashCommand::Usage => {
-                    let tracker = crate::usage::UsageTracker::new(
-                        crate::usage::UsageTracker::default_path(),
-                    );
+                    let tracker =
+                        crate::usage::UsageTracker::new(crate::usage::UsageTracker::default_path());
                     println!("{COLOR_DIM}{}{COLOR_RESET}", tracker.summary());
                 }
                 SlashCommand::Kms => {
@@ -4511,8 +4539,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     config.kms_active.retain(|n| n != &name);
                     if config.kms_active.len() == before {
                         println!("{COLOR_DIM}KMS '{name}' was not attached{COLOR_RESET}");
-                    } else if let Err(e) =
-                        ProjectConfig::set_active_kms(config.kms_active.clone())
+                    } else if let Err(e) = ProjectConfig::set_active_kms(config.kms_active.clone())
                     {
                         println!("{COLOR_YELLOW}save failed: {e}{COLOR_RESET}");
                     } else {
@@ -4521,25 +4548,26 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         );
                     }
                 }
-                SlashCommand::KmsShow(name) => {
-                    match crate::kms::resolve(&name) {
-                        Some(k) => {
-                            let body = k.read_index();
-                            if body.trim().is_empty() {
-                                println!(
+                SlashCommand::KmsShow(name) => match crate::kms::resolve(&name) {
+                    Some(k) => {
+                        let body = k.read_index();
+                        if body.trim().is_empty() {
+                            println!(
                                     "{COLOR_DIM}KMS '{name}' index is empty — populate it at {}{COLOR_RESET}",
                                     k.index_path().display()
                                 );
-                            } else {
-                                println!("{body}");
-                            }
+                        } else {
+                            println!("{body}");
                         }
-                        None => println!(
-                            "{COLOR_YELLOW}no KMS named '{name}'{COLOR_RESET}"
-                        ),
                     }
-                }
-                SlashCommand::KmsIngest { name, file, alias, force } => {
+                    None => println!("{COLOR_YELLOW}no KMS named '{name}'{COLOR_RESET}"),
+                },
+                SlashCommand::KmsIngest {
+                    name,
+                    file,
+                    alias,
+                    force,
+                } => {
                     let Some(k) = crate::kms::resolve(&name) else {
                         println!(
                             "{COLOR_YELLOW}no KMS named '{name}' (try /kms list or /kms new {name}){COLOR_RESET}"

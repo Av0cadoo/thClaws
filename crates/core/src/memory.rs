@@ -157,8 +157,19 @@ impl MemoryStore {
             }
             let body = e.body.trim();
             if !body.is_empty() {
+                // M6.18 BUG M5: cap per-entry body so a runaway 100K
+                // memory entry doesn't burn 100K tokens of system
+                // prompt every turn. Most legit entries are well under
+                // the cap; the truncation notice tells the model + the
+                // user (via /memory) that the entry dropped content.
+                let bounded = truncate_for_prompt(
+                    body,
+                    MEMORY_ENTRY_MAX_LINES,
+                    MEMORY_ENTRY_MAX_BYTES,
+                    &format!("memory entry `{}`", e.name),
+                );
                 section.push_str("\n\n");
-                section.push_str(body);
+                section.push_str(&bounded);
             }
             parts.push(section);
         }
@@ -202,6 +213,83 @@ pub const MEMORY_INDEX_MAX_LINES: usize = 200;
 /// long-line indexes that slip past the line count but still bloat the
 /// prompt. Matches Claude Code's `MAX_ENTRYPOINT_BYTES`.
 pub const MEMORY_INDEX_MAX_BYTES: usize = 25_000;
+
+/// Per-entry body cap (M6.18 BUG M5). Memory entries are meant to be
+/// tight notes — a recurring fact about the user, a rule from
+/// feedback, a reference to an external system. Pre-fix `system_prompt_section`
+/// inlined the full body of every entry without limit; a runaway 100K
+/// note would burn 100K tokens of system prompt every turn. Cap is
+/// generous enough for legitimate paragraphs of detail, mean enough
+/// to catch accidental dumps.
+pub const MEMORY_ENTRY_MAX_LINES: usize = 80;
+pub const MEMORY_ENTRY_MAX_BYTES: usize = 8_000;
+
+/// Generic truncate-with-notice for any text inlined into a system
+/// prompt section. Truncates first by lines (natural newline boundary,
+/// keeps markdown reasonable), then by bytes if still over cap (cuts
+/// at the last newline under the cap). Appends a one-line HTML-comment
+/// notice describing what was kept and what dropped, so the model sees
+/// the truncation explicitly. M6.18 BUG M5/M6/M7 helper — `truncate_index`
+/// is now a thin wrapper that calls this with `MEMORY.md`'s caps.
+pub fn truncate_for_prompt(raw: &str, max_lines: usize, max_bytes: usize, label: &str) -> String {
+    let trimmed = raw.trim_end_matches('\n');
+    let total_lines = trimmed.split('\n').count();
+    let total_bytes = trimmed.len();
+    let mut line_truncated = false;
+    let mut byte_truncated = false;
+
+    let after_lines: String = if total_lines > max_lines {
+        line_truncated = true;
+        trimmed
+            .split('\n')
+            .take(max_lines)
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        trimmed.to_string()
+    };
+
+    let after_bytes: String = if after_lines.len() > max_bytes {
+        byte_truncated = true;
+        let cap = max_bytes.min(after_lines.len());
+        // Walk back to a UTF-8 char boundary so we can slice safely.
+        let mut end = cap;
+        while end > 0 && !after_lines.is_char_boundary(end) {
+            end -= 1;
+        }
+        let slice = &after_lines[..end];
+        match slice.rfind('\n') {
+            Some(cut) => slice[..cut].to_string(),
+            None => slice.to_string(),
+        }
+    } else if total_bytes > max_bytes {
+        byte_truncated = true;
+        after_lines
+    } else {
+        after_lines
+    };
+
+    if !line_truncated && !byte_truncated {
+        return after_bytes;
+    }
+
+    let mut out = after_bytes;
+    out.push_str(&format!("\n\n<!-- {label} truncated: "));
+    match (line_truncated, byte_truncated) {
+        (true, true) => out.push_str(&format!(
+            "{total_lines} lines / {total_bytes} bytes → kept first {max_lines} lines under {max_bytes} byte cap.",
+        )),
+        (true, false) => out.push_str(&format!(
+            "{total_lines} lines → kept first {max_lines}.",
+        )),
+        (false, true) => out.push_str(&format!(
+            "{total_bytes} bytes > {max_bytes} cap → kept earlier content.",
+        )),
+        _ => unreachable!(),
+    }
+    out.push_str(" -->\n");
+    out
+}
 
 /// Apply `MEMORY.md`'s 200-line / 25 KB caps and, when either triggered,
 /// append a single notice line so the model (and the user, if they /memory)
@@ -486,5 +574,52 @@ mod tests {
         // Body-only entry (no description)
         assert!(section.contains("## bar"));
         assert!(section.contains("just a body"));
+    }
+
+    /// M6.18 BUG M5: per-entry body cap. Pre-fix a runaway 100K
+    /// memory entry burned 100K tokens of system prompt every turn;
+    /// now the body is truncated and a notice tells the model what
+    /// dropped.
+    #[test]
+    fn system_prompt_section_caps_oversized_entry_body() {
+        let dir = tempdir().unwrap();
+        let store = MemoryStore::new(dir.path().to_path_buf());
+        // 200 lines × 100 chars = ~20 KB → exceeds both caps.
+        let huge_body = (0..200)
+            .map(|i| format!("line {i}: {}", "x".repeat(100)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let entry = format!("---\ndescription: huge\ntype: project\n---\n{huge_body}\n");
+        write(&store.root.join("huge.md"), &entry);
+
+        let section = store.system_prompt_section().unwrap();
+        assert!(section.contains("## huge"));
+        assert!(
+            section.contains("memory entry `huge` truncated"),
+            "expected truncation notice; got: {}",
+            &section[section.len().saturating_sub(400)..]
+        );
+        // Section is bounded — well under the original 20 KB.
+        assert!(
+            section.len() < 12_000,
+            "expected truncated section; got len={}",
+            section.len()
+        );
+    }
+
+    /// M6.18 BUG M5/M6/M7: shared `truncate_for_prompt` helper. Pin
+    /// the basic shape — line cap fires + UTF-8 char-boundary safe.
+    #[test]
+    fn truncate_for_prompt_handles_line_cap_and_unicode() {
+        let raw = (0..50)
+            .map(|i| format!("ทดสอบ {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Force line truncation at 10.
+        let out = truncate_for_prompt(&raw, 10, 100_000, "test");
+        assert!(out.contains("ทดสอบ 0"));
+        assert!(out.contains("ทดสอบ 9"));
+        assert!(!out.contains("ทดสอบ 10"));
+        assert!(out.contains("test truncated"));
     }
 }

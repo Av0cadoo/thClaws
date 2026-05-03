@@ -596,6 +596,11 @@ pub fn build_todos_reminder() -> Option<String> {
     if !has_incomplete {
         return None;
     }
+    // M6.18 BUG M6: cap todos.md so an unmaintained list doesn't burn
+    // unbounded tokens every turn. 80 lines / 6 KB is generous for a
+    // typical scratchpad — headers + bullets average ~50 bytes/line.
+    let bounded =
+        crate::memory::truncate_for_prompt(raw.trim_end(), 80, 6_000, ".thclaws/todos.md");
     Some(format!(
         "## Existing todos (.thclaws/todos.md)\n\n\
          A scratchpad todo list from a prior session is present in this \
@@ -605,13 +610,12 @@ pub fn build_todos_reminder() -> Option<String> {
          should we do?\" while these answers are sitting in front of \
          you.\n\n\
          Current contents:\n\n\
-         ```markdown\n{raw}```\n\n\
+         ```markdown\n{bounded}```\n\n\
          If the user wants to resume, mark the next pending item as \
          `in_progress` via TodoWrite (passing the full list with that \
          one item flipped) and start work on it. If they want a fresh \
          start, write an updated list via TodoWrite that reflects the \
-         new direction.",
-        raw = raw.trim_end()
+         new direction."
     ))
 }
 
@@ -836,7 +840,26 @@ impl Agent {
 
                 let messages = {
                     let h = history.lock().expect("history lock");
-                    compact(&h, budget_tokens)
+                    // M6.18 BUG H1: subtract the system-prompt size + a
+                    // safety margin for tool definitions from the
+                    // budget BEFORE compacting messages. Pre-fix, a
+                    // large system prompt (CLAUDE.md cascade + memory
+                    // bodies + KMS indices + skills) plus a budget-
+                    // filling history could push the total request past
+                    // the model's context window even though `compact`
+                    // had "fitted" the messages. The provider then
+                    // 400'd with "context length exceeded."
+                    //
+                    // We reserve 4 KiB for tool definitions (typical
+                    // catalog of ~30-40 builtins + MCP tools) on top
+                    // of the system-prompt deduction — rough but keeps
+                    // the request comfortably inside the window.
+                    let system_tokens = crate::tokens::estimate_tokens(&system);
+                    let tools_reserve_tokens = 1024;
+                    let messages_budget = budget_tokens
+                        .saturating_sub(system_tokens)
+                        .saturating_sub(tools_reserve_tokens);
+                    compact(&h, messages_budget)
                 };
                 let tool_defs = tools.tool_defs();
 
@@ -2384,6 +2407,87 @@ mod tests {
         assert_eq!(outcome.stop_reason.as_deref(), Some("max_iterations"));
     }
 
+    /// M6.18 BUG H1: compaction now subtracts the system-prompt size
+    /// from the budget before trimming messages, so a large system
+    /// prompt + budget-filling history can't push the total request
+    /// past the model's context window. Pre-fix `compact()` was
+    /// called with the full budget, so a 50K system prompt + 128K
+    /// "fitted" messages = 178K request that 400'd on a 128K-context
+    /// model.
+    ///
+    /// We probe the deduction via a fake provider that captures the
+    /// inbound StreamRequest's message-token total. The system prompt
+    /// is sized to consume most of the budget; messages should be
+    /// trimmed accordingly.
+    #[tokio::test]
+    async fn compact_subtracts_system_prompt_tokens_from_budget() {
+        use std::sync::Mutex;
+
+        // Capture the messages count of every StreamRequest the
+        // provider receives.
+        struct CapturingProvider {
+            captured_messages: Arc<Mutex<Vec<usize>>>,
+        }
+        #[async_trait]
+        impl Provider for CapturingProvider {
+            async fn stream(&self, req: crate::providers::StreamRequest) -> Result<EventStream> {
+                self.captured_messages
+                    .lock()
+                    .unwrap()
+                    .push(req.messages.len());
+                // Single-text response, no tool use → end of turn.
+                Ok(Box::pin(stream::iter(vec![
+                    Ok(ProviderEvent::TextDelta("ok".into())),
+                    Ok(ProviderEvent::ContentBlockStop),
+                    Ok(ProviderEvent::MessageStop {
+                        stop_reason: Some("end_turn".into()),
+                        usage: None,
+                    }),
+                ])))
+            }
+        }
+
+        let captured: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+        let provider = Arc::new(CapturingProvider {
+            captured_messages: captured.clone(),
+        });
+
+        // Build an Agent with a big system prompt and small budget.
+        // budget=1000 tokens, system≈800 tokens → messages_budget ≈ 200.
+        let big_system = "x".repeat(3200); // ~800 tokens at 4 chars/token
+        let mut agent = Agent::new(provider, ToolRegistry::default(), "test-model", big_system);
+        agent.budget_tokens = 1000;
+
+        // Pre-load history with a multi-turn conversation that, naively
+        // counted, would fit in 1000 tokens but won't fit once we
+        // subtract 800 + 1024 reserve. Expect compact to drop most.
+        let pre = vec![
+            Message::user("a".repeat(200)),
+            Message::assistant("b".repeat(200)),
+            Message::user("c".repeat(200)),
+            Message::assistant("d".repeat(200)),
+            Message::user("trigger"),
+        ];
+        agent.set_history(pre);
+
+        let _ = collect_agent_turn(agent.run_turn("noop".into())).await;
+
+        let counts = captured.lock().unwrap().clone();
+        assert!(
+            !counts.is_empty(),
+            "provider should have received a request"
+        );
+        // Pre-fix this would be 6 (5 history + 1 new user msg = full
+        // history sent unchanged because compact got the full 1000-
+        // token budget). Post-fix: messages_budget is negative-clamped
+        // to 0, so compact aggressively drops to the minimum (1 msg).
+        assert!(
+            counts[0] <= 2,
+            "expected aggressive compaction (≤2 messages); got {} — system prompt deduction not applied",
+            counts[0]
+        );
+    }
+
     /// M6.17 BUG H1 + M3: when a cancel token is wired in and gets
     /// fired during the retry-backoff sleep, the agent stream errors
     /// out with a "cancelled by user" message instead of waiting the
@@ -2396,10 +2500,7 @@ mod tests {
         struct AlwaysErrProvider;
         #[async_trait]
         impl Provider for AlwaysErrProvider {
-            async fn stream(
-                &self,
-                _req: crate::providers::StreamRequest,
-            ) -> Result<EventStream> {
+            async fn stream(&self, _req: crate::providers::StreamRequest) -> Result<EventStream> {
                 Err(Error::Provider("transient".into()))
             }
         }

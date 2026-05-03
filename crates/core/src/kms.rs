@@ -513,7 +513,18 @@ pub fn system_prompt_section(active: &[String]) -> String {
         let body = if index.trim().is_empty() {
             "(empty index)".to_string()
         } else {
-            index.trim().to_string()
+            // M6.18 BUG M7: cap each KMS index. Pre-fix three active
+            // KMS each with an 80K index burned 240K tokens of system
+            // prompt every turn. Cap matches MEMORY.md's index cap
+            // (200 lines / 25 KB) — KMS indices are meant to be
+            // pointers ("ch1.md: API surface; ch2.md: ...") not
+            // archives, so the same shape applies.
+            crate::memory::truncate_for_prompt(
+                index.trim(),
+                crate::memory::MEMORY_INDEX_MAX_LINES,
+                crate::memory::MEMORY_INDEX_MAX_BYTES,
+                &format!("KMS index `{name}`"),
+            )
         };
         parts.push(format!(
             "## KMS: {name} ({scope})\n\n{body}\n\n\

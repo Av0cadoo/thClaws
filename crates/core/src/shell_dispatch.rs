@@ -1608,11 +1608,8 @@ pub async fn dispatch(
                     );
                     if let Ok(m) = plugin.manifest() {
                         if !m.mcp_servers.is_empty() {
-                            let mut names: Vec<&str> = m
-                                .mcp_servers
-                                .keys()
-                                .map(String::as_str)
-                                .collect();
+                            let mut names: Vec<&str> =
+                                m.mcp_servers.keys().map(String::as_str).collect();
                             names.sort();
                             note.push_str(&format!(
                                 "\n\n⚠  restart thClaws (/quit then relaunch) to spawn {} new MCP server(s): {}",
@@ -1696,7 +1693,8 @@ pub async fn dispatch(
                 Err(e) => emit(events_tx, format!("disable failed: {e}")),
             }
         }
-        SlashCommand::PluginShow { name } => match crate::plugins::find_installed_with_scope(&name) {
+        SlashCommand::PluginShow { name } => match crate::plugins::find_installed_with_scope(&name)
+        {
             Some((p, is_user)) => {
                 let status = if p.enabled { "enabled" } else { "disabled" };
                 let scope = if is_user { "user" } else { "project" };
@@ -2161,4 +2159,3 @@ fn mcp_server_names(name: &str) -> Option<Vec<String>> {
     names.sort();
     Some(names)
 }
-
