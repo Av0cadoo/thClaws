@@ -2351,6 +2351,15 @@ pub async fn run_print_mode(config: AppConfig, prompt: &str) -> Result<()> {
                 print!("{s}");
                 let _ = std::io::stdout().flush();
             }
+            Ok(AgentEvent::Thinking(s)) => {
+                // Reasoning models (DeepSeek v4/r1, OpenAI o-series, NVIDIA NIM
+                // glm4.7, …) emit reasoning_content before the final answer.
+                // Print dim-italic so it's distinguishable from the answer in
+                // -p / scripted output, but still visible (otherwise the user
+                // sees nothing for many seconds while the model thinks).
+                print!("\x1b[2;3m{s}\x1b[0m");
+                let _ = std::io::stdout().flush();
+            }
             Ok(AgentEvent::Done { .. }) => {
                 println!();
             }
@@ -3222,6 +3231,12 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         Ok(AgentEvent::Text(s)) => {
                             print!("{s}");
                             lead_log!("{s}");
+                            let _ = std::io::stdout().flush();
+                        }
+                        Ok(AgentEvent::Thinking(s)) => {
+                            // Dim-italic so reasoning is visibly distinct from
+                            // the final answer (DeepSeek v4/r1, glm4.7, etc.).
+                            print!("\x1b[2;3m{s}\x1b[0m");
                             let _ = std::io::stdout().flush();
                         }
                         Ok(AgentEvent::ToolCallStart { name, .. }) => {
