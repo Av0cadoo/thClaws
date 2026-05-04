@@ -138,9 +138,10 @@ impl ProviderKind {
             // default; users can `/model thaillm/<other>` to switch.
             Self::ThaiLLM => "thaillm/OpenThaiGPT-ThaiLLM-8B-Instruct-v7.2",
             // NVIDIA NIM — OpenAI-compatible hosted inference at integrate.api.nvidia.com.
-            // Model IDs keep the `nvidia/` prefix on the wire (that's NVIDIA's own namespace,
-            // not a thClaws routing prefix). Override via NVIDIA_BASE_URL for on-prem NIM.
-            Self::Nvidia => "nvidia/nemotron-3-super-120b-a12b",
+            // Stored ids use a uniform `nvidia/` routing prefix; for NVIDIA-owned models
+            // that yields a doubled prefix (`nvidia/nvidia/<name>`), the outer one stripped
+            // by build_provider before the request. Override via NVIDIA_BASE_URL for on-prem.
+            Self::Nvidia => "nvidia/nvidia/nemotron-3-super-120b-a12b",
         }
     }
 
@@ -400,9 +401,12 @@ impl ProviderKind {
         } else if model.starts_with("azure/") {
             Some(Self::AzureAIFoundry)
         } else if model.starts_with("nvidia/") {
-            // NVIDIA NIM (integrate.api.nvidia.com). Model IDs like
-            // `nvidia/nemotron-3-super-120b-a12b` keep the `nvidia/` prefix
-            // on the wire — it is part of the upstream model ID, not stripped.
+            // NVIDIA NIM (integrate.api.nvidia.com). The catalogue stores
+            // every NIM model under a uniform `nvidia/` routing prefix
+            // regardless of upstream owner namespace — `nvidia/nvidia/<name>`
+            // for NVIDIA-owned models, `nvidia/meta/<name>`, `nvidia/google/<name>`
+            // etc. for third-party-owned. `build_provider` strips the outer
+            // `nvidia/` so the upstream sees the original namespaced id.
             // OpenRouter proxies the same models as `openrouter/nvidia/...`;
             // the `openrouter/` check above catches those first.
             Some(Self::Nvidia)

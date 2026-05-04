@@ -2090,11 +2090,16 @@ pub fn build_provider(config: &AppConfig) -> Result<Arc<dyn Provider>> {
         }
         ProviderKind::Nvidia => {
             // NVIDIA NIM — OpenAI-compatible hosted inference at
-            // integrate.api.nvidia.com. Model IDs (e.g.
-            // `nvidia/nemotron-3-super-120b-a12b`) keep the `nvidia/`
-            // prefix on the wire — it is part of NVIDIA's own model
-            // namespace, not a thClaws routing prefix. Override via
-            // NVIDIA_BASE_URL for on-prem NIM deployments.
+            // integrate.api.nvidia.com. The `/v1/models` endpoint serves
+            // many vendor namespaces (`nvidia/…`, `meta/…`, `google/…`,
+            // `mistralai/…`); we store every entry under a uniform
+            // `nvidia/` routing prefix so `from_model_id` auto-routes the
+            // whole NIM catalog with one rule. Strip the prefix before
+            // hitting the upstream so NVIDIA-owned models stored as
+            // `nvidia/nvidia/<name>` reach the API as `nvidia/<name>`,
+            // and third-party-owned models like `nvidia/meta/<name>` go
+            // out as `meta/<name>`. Override via NVIDIA_BASE_URL for
+            // on-prem NIM deployments.
             let base = std::env::var("NVIDIA_BASE_URL")
                 .unwrap_or_else(|_| "https://integrate.api.nvidia.com/v1".to_string());
             let url = if base.ends_with("/chat/completions") {
@@ -2102,7 +2107,11 @@ pub fn build_provider(config: &AppConfig) -> Result<Arc<dyn Provider>> {
             } else {
                 format!("{}/chat/completions", base.trim_end_matches('/'))
             };
-            Ok(Arc::new(OpenAIProvider::new(api_key).with_base_url(url)))
+            Ok(Arc::new(
+                OpenAIProvider::new(api_key)
+                    .with_base_url(url)
+                    .with_strip_model_prefix("nvidia/"),
+            ))
         }
         ProviderKind::Ollama
         | ProviderKind::OllamaAnthropic

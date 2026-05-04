@@ -344,16 +344,22 @@ async fn run() -> Result<String, String> {
     }
 
     // 4d. NVIDIA NIM — OpenAI-compatible `/v1/models` at
-    //     integrate.api.nvidia.com. Model IDs are already namespaced
-    //     with the `nvidia/` prefix by NVIDIA's own API (e.g.
-    //     `nvidia/nemotron-3-super-120b-a12b`), so no prefix is added
-    //     on our side — different from ThaiLLM / Ollama Cloud where bare
-    //     ids need a routing prefix appended. Context comes from
-    //     OpenRouter's mirror of the same models where available;
-    //     falls back to provider default (131072).
+    //     integrate.api.nvidia.com. The endpoint returns ids from many
+    //     vendor namespaces (`nvidia/…`, `meta/…`, `google/…`,
+    //     `mistralai/…`, etc.). We prepend a uniform `nvidia/` routing
+    //     prefix so a single `from_model_id` rule auto-routes everything
+    //     served by NIM — same pattern Ollama Cloud uses for its mixed
+    //     vendor catalog. The `nvidia/` prefix is stripped in
+    //     `build_provider` before the request hits the upstream, which
+    //     means NVIDIA-owned models stored as `nvidia/nvidia/<name>`
+    //     restore the original `nvidia/<name>` id on the wire. Context
+    //     comes from OpenRouter's mirror where available; falls back to
+    //     provider default (131072).
     if let Ok(key) = std::env::var("NVIDIA_API_KEY") {
         match fetch_nvidia(&key).await {
             Ok(ids) => {
+                let prefixed: Vec<String> =
+                    ids.into_iter().map(|id| format!("nvidia/{id}")).collect();
                 let pc = cat
                     .providers
                     .entry("nvidia".into())
@@ -365,7 +371,7 @@ async fn run() -> Result<String, String> {
                     &mut cat,
                     "nvidia",
                     NVIDIA_URL,
-                    ids,
+                    prefixed,
                     &openrouter_ctx_by_bare,
                     &today,
                 );
