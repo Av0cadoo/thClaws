@@ -1013,11 +1013,22 @@ pub async fn dispatch(
                 budget_time_secs,
             );
             crate::goal_state::set(Some(new_goal));
-            // Live-register UpdateGoal tool so the model can mark it
-            // complete / blocked.
+            // Live-register the three goal-lifecycle tools (Phase C1):
+            //   RecordGoalProgress  — mid-loop audit checkpoint, status stays Active
+            //   MarkGoalComplete    — terminal Complete (audit required)
+            //   MarkGoalBlocked     — terminal Blocked (reason required)
+            // Authority is split so the model can't slip into "mark
+            // complete to escape the loop" — terminal transitions are
+            // distinct tools with required justification fields.
             state
                 .tool_registry
-                .register(std::sync::Arc::new(crate::tools::UpdateGoalTool));
+                .register(std::sync::Arc::new(crate::tools::RecordGoalProgressTool));
+            state
+                .tool_registry
+                .register(std::sync::Arc::new(crate::tools::MarkGoalCompleteTool));
+            state
+                .tool_registry
+                .register(std::sync::Arc::new(crate::tools::MarkGoalBlockedTool));
             state.rebuild_system_prompt();
             if let Err(e) = state.rebuild_agent(true) {
                 emit(events_tx, format!("rebuild failed: {e}"));

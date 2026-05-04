@@ -18,4 +18,4 @@ The runtime has flagged the goal as budget-exhausted, so do not start new substa
 - Identify any remaining work or open blockers.
 - Leave the user with a clear, concrete next step they can take or instruct you to take.
 
-Do not call MarkGoalComplete (or UpdateGoal with status=complete) unless the audit shows the objective has actually been achieved. Budget exhaustion is not completion. If the work is genuinely done, verify against the actual current state before marking complete; otherwise just summarize and stop.
+Do not call MarkGoalComplete unless the audit shows the objective has actually been achieved. Budget exhaustion is not completion. If the work is genuinely done, verify against the actual current state before marking complete; otherwise just summarize and stop. If you've hit a real blocker, call MarkGoalBlocked with a clear reason.

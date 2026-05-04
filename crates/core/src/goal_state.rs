@@ -2,11 +2,15 @@
 //!
 //! A goal is a user-supplied objective with optional token + time budgets.
 //! State persists per-session (carried in `WorkerState.goal` and serialized
-//! to session JSONL as `{"type": "goal_state", ...}` events). The `/goal
+//! to session JSONL as `{"type": "goal_snapshot", ...}` events). The `/goal
 //! continue` command builds an audit prompt from the current state +
-//! consumed budget; the model can mark the goal complete via the
-//! `UpdateGoal` tool, which mutates the global state via the broadcaster
-//! (same pattern as `plan_state`).
+//! consumed budget; the model mutates state via the three goal-lifecycle
+//! tools (Phase C1 — authority split):
+//!   - `RecordGoalProgress` — mid-loop checkpoint, status stays Active
+//!   - `MarkGoalComplete`   — terminal Complete (audit required)
+//!   - `MarkGoalBlocked`    — terminal Blocked (reason required)
+//! All three call `apply()` which fires the broadcaster (same pattern as
+//! `plan_state`).
 //!
 //! The `goal-continue` audit prompt template (see
 //! `default_prompts/goal_continue.md`) bakes in the discipline:

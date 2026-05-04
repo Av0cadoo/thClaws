@@ -5860,11 +5860,18 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         budget_time_secs,
                     );
                     crate::goal_state::set(Some(new_goal));
-                    tool_registry.register(Arc::new(crate::tools::UpdateGoalTool));
+                    // Phase C1: register the three split goal-lifecycle
+                    // tools (RecordGoalProgress / MarkGoalComplete /
+                    // MarkGoalBlocked) — authority separation prevents
+                    // the model from slipping into "mark complete to
+                    // escape the loop".
+                    tool_registry.register(Arc::new(crate::tools::RecordGoalProgressTool));
+                    tool_registry.register(Arc::new(crate::tools::MarkGoalCompleteTool));
+                    tool_registry.register(Arc::new(crate::tools::MarkGoalBlockedTool));
                     // System prompt + agent rebuild aren't strictly
-                    // required (UpdateGoal is a callable tool either
+                    // required (the goal tools are callable either
                     // way) but rebuilding ensures the model sees the
-                    // new tool in its catalog this turn.
+                    // new tools in its catalog this turn.
                     println!(
                         "{COLOR_DIM}goal started: \"{}\" (budget_tokens={}, budget_time={}){COLOR_RESET}",
                         objective,
