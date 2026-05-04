@@ -239,6 +239,12 @@ pub struct TerminalRenderState {
     last_tool_count: u32,
     merging: bool,
     pending_newline_after_tool: bool,
+    /// `true` when the most recent emitted bytes were dim-italic
+    /// reasoning. The next non-thinking event prepends a `\r\n` so the
+    /// final answer (or tool call) starts on a fresh line instead of
+    /// running into the reasoning text. Cleared by any non-thinking
+    /// emission.
+    last_was_thinking: bool,
 }
 
 /// Convert a ViewEvent into ANSI bytes suitable for xterm.js. Returns
@@ -254,6 +260,10 @@ pub fn render_terminal_ansi(state: &mut TerminalRenderState, ev: &ViewEvent) -> 
             label,
             input: _,
         } => {
+            // Tool call output already starts with \r\n, so any prior
+            // thinking is naturally separated. Clear the flag so the
+            // next text delta doesn't add a redundant blank line.
+            state.last_was_thinking = false;
             if state.pending_newline_after_tool
                 && state.last_tool_label.as_deref() == Some(label.as_str())
                 && state.last_tool_count >= 1
@@ -269,6 +279,7 @@ pub fn render_terminal_ansi(state: &mut TerminalRenderState, ev: &ViewEvent) -> 
             return Some(format!("\r\n\x1b[2m[tool: {label}]\x1b[0m"));
         }
         ViewEvent::ToolCallResult { .. } => {
+            state.last_was_thinking = false;
             if state.merging {
                 state.merging = false;
                 state.last_tool_count += 1;
@@ -368,11 +379,28 @@ pub fn render_terminal_ansi(state: &mut TerminalRenderState, ev: &ViewEvent) -> 
             state.last_tool_label = None;
             state.last_tool_count = 0;
             state.merging = false;
+            // Track whether this emission was reasoning so the NEXT
+            // non-thinking event can prepend a newline. Done before the
+            // pending_newline injection so the new flag reflects what
+            // we're actually about to write.
+            let is_thinking = matches!(ev, ViewEvent::AssistantThinkingDelta(_));
+            let needs_thinking_break = state.last_was_thinking && !is_thinking;
+            state.last_was_thinking = is_thinking;
+            let mut prefix = String::new();
             if state.pending_newline_after_tool {
                 state.pending_newline_after_tool = false;
-                Some(format!("\r\n{text}"))
-            } else {
+                prefix.push_str("\r\n");
+            }
+            if needs_thinking_break {
+                // Reasoning just ended; the assistant's actual answer
+                // (or tool call, or slash output) starts on a fresh
+                // line so the dim italic doesn't run into normal text.
+                prefix.push_str("\r\n");
+            }
+            if prefix.is_empty() {
                 Some(text)
+            } else {
+                Some(format!("{prefix}{text}"))
             }
         }
         None => None,

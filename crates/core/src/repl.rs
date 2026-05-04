@@ -2360,9 +2360,14 @@ pub async fn run_print_mode(config: AppConfig, prompt: &str) -> Result<()> {
         .with_permission_mode(perm_mode);
 
     let mut stream = Box::pin(agent.run_turn(prompt.to_string()));
+    let mut last_was_thinking = false;
     while let Some(ev) = stream.next().await {
         match ev {
             Ok(AgentEvent::Text(s)) => {
+                if last_was_thinking {
+                    println!();
+                    last_was_thinking = false;
+                }
                 print!("{s}");
                 let _ = std::io::stdout().flush();
             }
@@ -2373,6 +2378,7 @@ pub async fn run_print_mode(config: AppConfig, prompt: &str) -> Result<()> {
                 // -p / scripted output, but still visible (otherwise the user
                 // sees nothing for many seconds while the model thinks).
                 print!("\x1b[2;3m{s}\x1b[0m");
+                last_was_thinking = true;
                 let _ = std::io::stdout().flush();
             }
             Ok(AgentEvent::Done { .. }) => {
@@ -2382,7 +2388,14 @@ pub async fn run_print_mode(config: AppConfig, prompt: &str) -> Result<()> {
                 eprintln!("\nerror: {e}");
                 std::process::exit(1);
             }
-            _ => {}
+            _ => {
+                // Any other event after thinking should also start on a
+                // new line so the dim-italic doesn't run into it.
+                if last_was_thinking {
+                    println!();
+                    last_was_thinking = false;
+                }
+            }
         }
     }
     Ok(())
@@ -3231,6 +3244,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                 lead_log!("{COLOR_GREEN}");
                 let _ = std::io::stdout().flush();
                 let mut stream = Box::pin(agent.run_turn(team_prompt));
+                let mut last_was_thinking = false;
                 loop {
                     let ev = tokio::select! {
                         ev = stream.next() => ev,
@@ -3244,6 +3258,10 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     let Some(ev) = ev else { break };
                     match ev {
                         Ok(AgentEvent::Text(s)) => {
+                            if last_was_thinking {
+                                println!();
+                                last_was_thinking = false;
+                            }
                             print!("{s}");
                             lead_log!("{s}");
                             let _ = std::io::stdout().flush();
@@ -3252,9 +3270,14 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                             // Dim-italic so reasoning is visibly distinct from
                             // the final answer (DeepSeek v4/r1, glm4.7, etc.).
                             print!("\x1b[2;3m{s}\x1b[0m");
+                            last_was_thinking = true;
                             let _ = std::io::stdout().flush();
                         }
                         Ok(AgentEvent::ToolCallStart { name, .. }) => {
+                            // Tool-call line already starts with \n, so any
+                            // prior thinking is naturally separated; clear
+                            // the flag so we don't double-line.
+                            last_was_thinking = false;
                             print!(
                                 "{COLOR_RESET}\n{COLOR_DIM}[tool: {name}]{COLOR_RESET}{COLOR_GREEN}"
                             );
@@ -6023,6 +6046,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
         let turn_start = std::time::Instant::now();
         let mut stream = Box::pin(agent.run_turn(line.to_string()));
         let mut _cancelled = false;
+        let mut last_was_thinking = false;
         loop {
             let ev = tokio::select! {
                 ev = stream.next() => ev,
@@ -6037,6 +6061,10 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
             match ev {
                 Ok(AgentEvent::IterationStart { .. }) => {}
                 Ok(AgentEvent::Text(s)) => {
+                    if last_was_thinking {
+                        println!();
+                        last_was_thinking = false;
+                    }
                     print!("{s}");
                     lead_log!("{s}");
                     let _ = std::io::stdout().flush();
@@ -6045,9 +6073,13 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                     // Dim-italic so reasoning is visibly distinct from
                     // the model's final answer in the CLI stream.
                     print!("\x1b[2;3m{s}\x1b[0m");
+                    last_was_thinking = true;
                     let _ = std::io::stdout().flush();
                 }
                 Ok(AgentEvent::ToolCallStart { name, input, .. }) => {
+                    // Tool-call line already starts with \n, so any prior
+                    // thinking is naturally separated; clear the flag.
+                    last_was_thinking = false;
                     let detail = match name.as_str() {
                         "Bash" => input
                             .get("command")
