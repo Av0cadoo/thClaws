@@ -793,10 +793,18 @@ export function ChatView({ active, modalOpen }: Props) {
           const isAssistant = msg.role === "assistant";
           const isSystem = msg.role === "system";
           const copied = copiedMessageIndex === i;
+          // Restored chat histories can be a wall of tool indicators
+          // between user turns; an extra blank line before each user
+          // message makes turn boundaries scannable. We apply it only
+          // when the previous message was something other than a
+          // user bubble — back-to-back user inputs (rare, but
+          // possible) keep the standard `space-y-3` spacing.
+          const needsTurnGap =
+            msg.role === "user" && i > 0 && messages[i - 1]?.role !== "user";
           return (
             <div
               key={i}
-              className={`flex ${msg.role === "user" ? "justify-end" : isSystem ? "justify-center" : "justify-start"}`}
+              className={`flex ${msg.role === "user" ? "justify-end" : isSystem ? "justify-center" : "justify-start"}${needsTurnGap ? " pt-4" : ""}`}
             >
               <div
                 className={`group relative max-w-[80%] rounded-lg py-2 pl-3 pr-9 text-sm ${isAssistant ? "" : "whitespace-pre-wrap"}`}

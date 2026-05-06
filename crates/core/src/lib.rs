@@ -47,6 +47,7 @@ pub mod providers;
 pub mod recent_dirs;
 pub mod repl;
 pub mod sandbox;
+pub mod schedule;
 pub mod secrets;
 #[cfg(feature = "gui")]
 pub mod server;
