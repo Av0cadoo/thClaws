@@ -2494,7 +2494,7 @@ async fn load_mcp_servers(
 
 /// Non-interactive mode: run a single prompt and print the result to stdout.
 /// Matches the Python `--print` flag behavior.
-pub async fn run_print_mode(config: AppConfig, prompt: &str) -> Result<()> {
+pub async fn run_print_mode(config: AppConfig, prompt: &str, verbose: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let ctx = ProjectContext::discover(&cwd)?;
     let memory_store = MemoryStore::default_path().map(MemoryStore::new);
@@ -2541,8 +2541,10 @@ pub async fn run_print_mode(config: AppConfig, prompt: &str) -> Result<()> {
     };
     let agent = Agent::new(provider, tool_registry, config.model.clone(), system)
         .with_max_iterations(config.max_iterations)
+        .with_max_tokens(config.max_tokens)
         .with_permission_mode(perm_mode);
 
+    let turn_start = std::time::Instant::now();
     let mut stream = Box::pin(agent.run_turn(prompt.to_string()));
     let mut last_was_thinking = false;
     while let Some(ev) = stream.next().await {
@@ -2565,8 +2567,28 @@ pub async fn run_print_mode(config: AppConfig, prompt: &str) -> Result<()> {
                 last_was_thinking = true;
                 let _ = std::io::stdout().flush();
             }
-            Ok(AgentEvent::Done { .. }) => {
+            Ok(AgentEvent::Done { usage, .. }) => {
                 println!();
+                // Issue #69: --verbose surfaces the same per-turn token
+                // line the REPL prints, but to stderr so piped consumers
+                // (`thclaws -p ... | jq`) get clean stdout. Default off
+                // — print mode stays scriptable as before.
+                if verbose {
+                    let cache_info = match (
+                        usage.cache_creation_input_tokens,
+                        usage.cache_read_input_tokens,
+                    ) {
+                        (Some(c), Some(r)) if c > 0 || r > 0 => {
+                            format!(" · cache: +{}w/{}r", c, r)
+                        }
+                        _ => String::new(),
+                    };
+                    let elapsed = format_duration(turn_start.elapsed());
+                    eprintln!(
+                        "[tokens: {}in/{}out{} · {}]",
+                        usage.input_tokens, usage.output_tokens, cache_info, elapsed
+                    );
+                }
             }
             Err(e) => {
                 eprintln!("\nerror: {e}");
@@ -2899,6 +2921,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
             system: system.clone(),
             max_iterations: config.max_iterations,
             max_depth: crate::subagent::DEFAULT_MAX_DEPTH,
+            max_tokens: config.max_tokens,
             agent_defs: agent_defs.clone(),
             approver: approver.clone(),
             permission_mode: perm_mode,
@@ -2949,6 +2972,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
         system.clone(),
     )
     .with_max_iterations(config.max_iterations)
+    .with_max_tokens(config.max_tokens)
     .with_permission_mode(perm_mode)
     .with_approver(approver.clone())
     .with_hooks(hooks_arc.clone());
@@ -3799,6 +3823,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         system.clone(),
                     )
                     .with_max_iterations(config.max_iterations)
+                    .with_max_tokens(config.max_tokens)
                     .with_permission_mode(perm_mode)
                     .with_approver(approver.clone())
                     .with_hooks(std::sync::Arc::new(config.hooks.clone()));
@@ -3875,6 +3900,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         system.clone(),
                     )
                     .with_max_iterations(config.max_iterations)
+                    .with_max_tokens(config.max_tokens)
                     .with_permission_mode(perm_mode)
                     .with_approver(approver.clone())
                     .with_hooks(std::sync::Arc::new(config.hooks.clone()));
@@ -4833,6 +4859,7 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                                     system.clone(),
                                 )
                                 .with_max_iterations(config.max_iterations)
+                                .with_max_tokens(config.max_tokens)
                                 .with_permission_mode(perm_mode)
                                 .with_approver(approver.clone())
                                 .with_hooks(std::sync::Arc::new(config.hooks.clone()));
@@ -8020,6 +8047,7 @@ mod tests {
             system: String::new(),
             max_iterations: 1,
             max_depth: 3,
+            max_tokens: 8192,
             agent_defs: crate::agent_defs::AgentDefsConfig::default(),
             approver: approver.clone(),
             permission_mode: PermissionMode::Ask,

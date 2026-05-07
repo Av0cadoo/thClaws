@@ -766,6 +766,17 @@ impl Agent {
         self
     }
 
+    /// Override the per-request output token budget. The provider receives
+    /// this as `max_tokens` (Anthropic) / `max_completion_tokens` (OpenAI).
+    /// Without this, `Agent::new` defaults to 8192 — fine for large-context
+    /// models but rejected by 16 k models when the input alone is ~13 k.
+    /// Wired from `AppConfig::max_tokens` at every call site so
+    /// `settings.json`'s `maxTokens` actually reaches the wire.
+    pub fn with_max_tokens(mut self, n: u32) -> Self {
+        self.max_tokens = n;
+        self
+    }
+
     pub fn with_permission_mode(mut self, mode: PermissionMode) -> Self {
         self.permission_mode = mode;
         self
@@ -1571,6 +1582,32 @@ mod tests {
     use futures::stream;
     use std::collections::VecDeque;
     use tempfile::tempdir;
+
+    // ── Builder semantics ──────────────────────────────────────────────
+
+    /// Issue #72: settings.json `maxTokens` was parsed but never reached
+    /// the wire because every Agent::new call site dropped to the
+    /// hardcoded 8192 default. Verify the default + that with_max_tokens
+    /// overrides it.
+    #[test]
+    fn agent_default_max_tokens_is_8192_and_with_max_tokens_overrides() {
+        struct NoopProvider;
+        #[async_trait]
+        impl Provider for NoopProvider {
+            async fn stream(&self, _req: crate::providers::StreamRequest) -> Result<EventStream> {
+                unreachable!("not invoked in this test")
+            }
+        }
+        let agent = Agent::new(
+            Arc::new(NoopProvider),
+            crate::tools::ToolRegistry::new(),
+            "test",
+            "system",
+        );
+        assert_eq!(agent.max_tokens, 8192);
+        let agent = agent.with_max_tokens(2048);
+        assert_eq!(agent.max_tokens, 2048);
+    }
 
     // ── Layer-2 plan reminder shape tests (M4.1) ───────────────────────
     //

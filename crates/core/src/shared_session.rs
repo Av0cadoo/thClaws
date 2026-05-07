@@ -544,6 +544,7 @@ impl WorkerState {
             &self.config.model,
             &self.system_prompt,
         )
+        .with_max_tokens(self.config.max_tokens)
         .with_approver(self.approver.clone())
         .with_cancel(self.cancel.clone())
         // M6.35 HOOK1: re-snapshot config.hooks on rebuild — config
@@ -1031,6 +1032,7 @@ async fn run_worker(
             system: system.clone(),
             max_iterations: config.max_iterations,
             max_depth: crate::subagent::DEFAULT_MAX_DEPTH,
+            max_tokens: config.max_tokens,
             agent_defs: agent_defs_state.clone(),
             approver: approver.clone(),
             permission_mode: perm_mode,
@@ -1047,6 +1049,7 @@ async fn run_worker(
         factory
     };
     let mut agent = Agent::new(provider, tools.clone(), &config.model, &system)
+        .with_max_tokens(config.max_tokens)
         .with_approver(approver.clone())
         .with_cancel(cancel.clone())
         .with_hooks(hooks_arc.clone());
