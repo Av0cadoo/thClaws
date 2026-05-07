@@ -266,6 +266,48 @@ pub enum ViewEvent {
         step_title: String,
         turns: usize,
     },
+    /// User-spawned side-channel agent started running. `id` is the
+    /// stable handle the user can reference in `/agent cancel <id>`;
+    /// `agent_name` is the AgentDef name (e.g. `translator`). Frontend
+    /// renders a "🔄 1 background agent running" status indicator above
+    /// the chat input area when at least one side-channel is active.
+    SideChannelStart {
+        id: String,
+        agent_name: String,
+    },
+    /// Streaming text delta from a side-channel agent's response.
+    /// Frontend appends to the in-progress side-channel bubble.
+    SideChannelTextDelta {
+        id: String,
+        text: String,
+    },
+    /// A tool call inside a side-channel agent. Surfaced for
+    /// completeness so the per-thread drill-down stream has the
+    /// same fidelity as the main agent's tool indicators. Most users
+    /// will only see the final result, not these.
+    SideChannelToolCall {
+        id: String,
+        tool_name: String,
+        label: String,
+    },
+    /// Side-channel agent finished. `duration_ms` is wall-clock from
+    /// spawn to idle; `result_text` is the final assistant message
+    /// (concatenated text blocks). Frontend renders a "✓ done in
+    /// 5m23s" header on the side-channel bubble.
+    SideChannelDone {
+        id: String,
+        agent_name: String,
+        duration_ms: u64,
+        result_text: String,
+    },
+    /// Side-channel agent errored or was cancelled before completion.
+    /// `error` is a one-line description; the bubble flips to a red
+    /// header. Cancellation (via `/agent cancel`) lands here too with
+    /// `error: "cancelled"`.
+    SideChannelError {
+        id: String,
+        error: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -454,6 +496,17 @@ pub struct WorkerState {
     /// loop budget on pure thinking. Init `true` so the very first
     /// /loop /goal continue isn't pre-suppressed.
     pub last_turn_made_tool_calls: bool,
+    /// AgentFactory used to spawn subagents (`Task` tool) and side-
+    /// channel agents (`/agent` slash command). Built once at worker
+    /// init and cloned per spawn — reusing the factory means side
+    /// channels inherit the same provider, base tools, system prompt,
+    /// and approver as the main agent.
+    pub agent_factory: std::sync::Arc<dyn crate::subagent::AgentFactory>,
+    /// Loaded agent definitions (`.thclaws/agents/*.md` + plugin agent
+    /// dirs). Side-channel `/agent` validates names against this list
+    /// before spawning; the factory uses it to register a Task tool
+    /// for the spawned child.
+    pub agent_defs: crate::agent_defs::AgentDefsConfig,
 }
 
 /// M6.29: handle to a running `/loop` task.
@@ -966,9 +1019,9 @@ async fn run_worker(
     } else {
         crate::permissions::PermissionMode::Ask
     };
-    {
-        let plugin_agent_dirs = crate::plugins::plugin_agent_dirs();
-        let agent_defs = crate::agent_defs::AgentDefsConfig::load_with_extra(&plugin_agent_dirs);
+    let plugin_agent_dirs = crate::plugins::plugin_agent_dirs();
+    let agent_defs_state = crate::agent_defs::AgentDefsConfig::load_with_extra(&plugin_agent_dirs);
+    let factory_state: Arc<dyn crate::subagent::AgentFactory> = {
         let base_tools = tools.clone();
         let factory = Arc::new(crate::subagent::ProductionAgentFactory {
             provider: provider.clone(),
@@ -977,7 +1030,7 @@ async fn run_worker(
             system: system.clone(),
             max_iterations: config.max_iterations,
             max_depth: crate::subagent::DEFAULT_MAX_DEPTH,
-            agent_defs: agent_defs.clone(),
+            agent_defs: agent_defs_state.clone(),
             approver: approver.clone(),
             permission_mode: perm_mode,
             cancel: Some(cancel.clone()),
@@ -986,11 +1039,12 @@ async fn run_worker(
             hooks: Some(hooks_arc.clone()),
         });
         tools.register(std::sync::Arc::new(
-            crate::subagent::SubAgentTool::new(factory)
+            crate::subagent::SubAgentTool::new(factory.clone())
                 .with_depth(0)
-                .with_agent_defs(agent_defs),
+                .with_agent_defs(agent_defs_state.clone()),
         ));
-    }
+        factory
+    };
     let mut agent = Agent::new(provider, tools.clone(), &config.model, &system)
         .with_approver(approver.clone())
         .with_cancel(cancel.clone())
@@ -1080,6 +1134,8 @@ async fn run_worker(
         // happens before any turn has run, so the suppression check
         // would otherwise gate the loop forever on iteration 0.
         last_turn_made_tool_calls: true,
+        agent_factory: factory_state,
+        agent_defs: agent_defs_state,
     };
 
     // M6.35 HOOK2: fire session_start hook now that WorkerState is
@@ -1389,6 +1445,7 @@ async fn run_worker(
                                 summary: Some(format!(
                                     "MCP-App widget requested `{qualified_name}`. Allow?"
                                 )),
+                                originator: crate::permissions::AgentOrigin::Main,
                             };
                             matches!(
                                 state.approver.approve(&req).await,

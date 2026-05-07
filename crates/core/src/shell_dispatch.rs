@@ -2400,6 +2400,49 @@ pub async fn dispatch(
                 Err(e) => emit(events_tx, format!("/schedule uninstall: join error: {e}")),
             }
         }
+        SlashCommand::Agent { name, prompt } => {
+            // Spawn user-driven side channel. Returns immediately
+            // with the assigned id; the agent runs concurrently on
+            // its own tokio task and streams `chat_side_channel_*`
+            // events back to the chat surface.
+            match crate::side_channel::spawn_side_channel(
+                name.clone(),
+                prompt,
+                state.agent_factory.clone(),
+                state.agent_defs.clone(),
+                events_tx.clone(),
+            )
+            .await
+            {
+                Ok(id) => emit(
+                    events_tx,
+                    format!("✓ spawned background agent '{name}' (id: {id})"),
+                ),
+                Err(e) => emit(events_tx, format!("/agent: {e}")),
+            }
+        }
+        SlashCommand::AgentsList => {
+            let active = crate::side_channel::list_side_channels();
+            if active.is_empty() {
+                emit(events_tx, "no active background agents".into());
+            } else {
+                let mut out = String::new();
+                for (id, name, elapsed) in active {
+                    out.push_str(&format!("  {id}  {name:24}  {elapsed:.1}s elapsed\n"));
+                }
+                emit(events_tx, out.trim_end().to_string());
+            }
+        }
+        SlashCommand::AgentCancel(id) => {
+            if crate::side_channel::cancel_side_channel(&id) {
+                emit(events_tx, format!("/agent cancel '{id}': signal sent"));
+            } else {
+                emit(
+                    events_tx,
+                    format!("/agent cancel '{id}': no such active agent (try /agents)"),
+                );
+            }
+        }
         SlashCommand::Unknown(detail) => {
             emit(events_tx, format!("unknown command: {detail}"));
         }

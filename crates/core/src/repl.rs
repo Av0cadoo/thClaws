@@ -418,6 +418,22 @@ pub enum SlashCommand {
     /// `/schedule uninstall` — stop and remove the daemon's
     /// supervisor entry.
     ScheduleUninstall,
+    /// `/agent <name> <prompt>` — spawn a user-driven side-channel
+    /// agent that runs concurrently with main. Result lands as a
+    /// chat-side bubble (GUI) or a one-line ANSI marker (CLI) when
+    /// done; doesn't touch main agent's history. Independent cancel —
+    /// main's Cmd-C does NOT kill it. See `crate::side_channel`.
+    Agent {
+        name: String,
+        prompt: String,
+    },
+    /// `/agents` — list active side-channel agents with id, name,
+    /// elapsed time. Both surfaces render the same compact table.
+    AgentsList,
+    /// `/agent cancel <id>` — fire the cancel token of the named
+    /// side channel. The agent's `cancelled().await` wakes and the
+    /// spawn task emits `SideChannelError { error: "cancelled" }`.
+    AgentCancel(String),
     Unknown(String),
 }
 
@@ -926,8 +942,46 @@ pub fn parse_slash(input: &str) -> Option<SlashCommand> {
         "loop" => parse_loop_subcommand(args),
         "goal" => parse_goal_subcommand(args),
         "schedule" | "sched" => parse_schedule_subcommand(args),
+        "agent" => parse_agent_subcommand(args),
+        "agents" => SlashCommand::AgentsList,
         _ => SlashCommand::Unknown(cmd.to_string()),
     })
+}
+
+/// Parse `/agent <name> <prompt>` and `/agent cancel <id>`. Bare
+/// `/agent` returns Unknown with a usage hint. Empty name (only
+/// whitespace after the slash) → Unknown.
+fn parse_agent_subcommand(args: &str) -> SlashCommand {
+    let args = args.trim();
+    if args.is_empty() {
+        return SlashCommand::Unknown(
+            "usage: /agent <name> <prompt>   (or /agent cancel <id>)".into(),
+        );
+    }
+    // Recognize `cancel <id>` first — `cancel` would otherwise be
+    // treated as an agent name.
+    if let Some(rest) = args.strip_prefix("cancel") {
+        let rest = rest.trim();
+        if rest.is_empty() {
+            return SlashCommand::Unknown(
+                "usage: /agent cancel <id>   (try /agents to see active ids)".into(),
+            );
+        }
+        return SlashCommand::AgentCancel(rest.to_string());
+    }
+    let (name, prompt) = match args.split_once(char::is_whitespace) {
+        Some((n, p)) => (n.trim(), p.trim()),
+        None => (args, ""),
+    };
+    if prompt.is_empty() {
+        return SlashCommand::Unknown(format!(
+            "usage: /agent {name} <prompt>   (prompt cannot be empty)"
+        ));
+    }
+    SlashCommand::Agent {
+        name: name.to_string(),
+        prompt: prompt.to_string(),
+    }
 }
 
 /// M6.27: detect the `# <name>:<body>` memory shortcut.
@@ -2007,7 +2061,12 @@ pub fn render_help() -> &'static str {
      /schedule resume ID  Re-enable a paused schedule\n  \
      /schedule rm ID      Remove a schedule from the store\n  \
      /schedule install    Install scheduler daemon (launchd / systemd-user)\n  \
-     /schedule uninstall  Stop daemon + remove supervisor entry\n\n  \
+     /schedule uninstall  Stop daemon + remove supervisor entry\n  \
+     /agent NAME PROMPT   Spawn background subagent (GUI-only).\n  \
+     \x20                   Runs concurrently with main, doesn't touch\n  \
+     \x20                   main's history. Result lands as a side bubble.\n  \
+     /agents              List active background agents (id, name, elapsed)\n  \
+     /agent cancel ID     Cancel a running background agent by id\n\n  \
      ! <command>       Run a shell command directly (e.g. ! git status)"
 }
 
@@ -6358,6 +6417,73 @@ pub async fn run_repl(mut config: AppConfig) -> Result<()> {
                         }
                     }
                 }
+                SlashCommand::Agent { name, prompt } => {
+                    #[cfg(feature = "gui")]
+                    {
+                        // Side-channel spawn requires the worker's
+                        // events_tx, which exists in `--gui` and
+                        // `--serve` modes. CLI REPL has no broadcast
+                        // surface — fall through to the not-available
+                        // message even when gui feature compiles in.
+                        // For now: tell user this is GUI-only.
+                        let _ = (&name, &prompt);
+                        println!(
+                            "{COLOR_YELLOW}/agent is only available in GUI mode \
+                             (thclaws or thclaws --serve). For terminal use, \
+                             call the Task tool from the model directly.{COLOR_RESET}"
+                        );
+                    }
+                    #[cfg(not(feature = "gui"))]
+                    {
+                        let _ = (&name, &prompt);
+                        println!(
+                            "{COLOR_YELLOW}/agent is not available in thclaws-cli \
+                             (rebuild with --features gui or use thclaws --gui).{COLOR_RESET}"
+                        );
+                    }
+                }
+                SlashCommand::AgentsList => {
+                    #[cfg(feature = "gui")]
+                    {
+                        let active = crate::side_channel::list_side_channels();
+                        if active.is_empty() {
+                            println!(
+                                "{COLOR_DIM}no active background agents{COLOR_RESET}"
+                            );
+                        } else {
+                            for (id, name, elapsed) in active {
+                                println!(
+                                    "{COLOR_DIM}  {id}  {name:24}  {elapsed:.1}s elapsed{COLOR_RESET}"
+                                );
+                            }
+                        }
+                    }
+                    #[cfg(not(feature = "gui"))]
+                    {
+                        println!(
+                            "{COLOR_YELLOW}/agents not available in thclaws-cli.{COLOR_RESET}"
+                        );
+                    }
+                }
+                SlashCommand::AgentCancel(id) => {
+                    #[cfg(feature = "gui")]
+                    {
+                        if crate::side_channel::cancel_side_channel(&id) {
+                            println!("{COLOR_DIM}/agent cancel '{id}': signal sent{COLOR_RESET}");
+                        } else {
+                            println!(
+                                "{COLOR_YELLOW}/agent cancel '{id}': no such active agent (try /agents){COLOR_RESET}"
+                            );
+                        }
+                    }
+                    #[cfg(not(feature = "gui"))]
+                    {
+                        let _ = id;
+                        println!(
+                            "{COLOR_YELLOW}/agent cancel not available in thclaws-cli.{COLOR_RESET}"
+                        );
+                    }
+                }
                 SlashCommand::Unknown(what) => {
                     println!("{COLOR_YELLOW}unknown command: {what}{COLOR_RESET}");
                 }
@@ -7479,6 +7605,67 @@ mod tests {
             parse_slash("/sched install"),
             Some(SlashCommand::ScheduleInstall),
         );
+    }
+
+    #[test]
+    fn parse_slash_agent_basic() {
+        assert_eq!(
+            parse_slash("/agent translator แปลไฟล์ x"),
+            Some(SlashCommand::Agent {
+                name: "translator".into(),
+                prompt: "แปลไฟล์ x".into(),
+            }),
+        );
+        assert_eq!(
+            parse_slash("/agent researcher  multi-word  prompt  here"),
+            Some(SlashCommand::Agent {
+                name: "researcher".into(),
+                prompt: "multi-word  prompt  here".into(),
+            }),
+        );
+    }
+
+    #[test]
+    fn parse_slash_agent_no_prompt_errors() {
+        match parse_slash("/agent translator") {
+            Some(SlashCommand::Unknown(msg)) => {
+                assert!(msg.contains("prompt cannot be empty"), "got: {msg}");
+            }
+            other => panic!("expected Unknown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_slash_agent_bare_errors() {
+        match parse_slash("/agent") {
+            Some(SlashCommand::Unknown(msg)) => {
+                assert!(msg.contains("usage: /agent"), "got: {msg}");
+            }
+            other => panic!("expected Unknown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_slash_agents_list() {
+        assert_eq!(parse_slash("/agents"), Some(SlashCommand::AgentsList));
+    }
+
+    #[test]
+    fn parse_slash_agent_cancel() {
+        assert_eq!(
+            parse_slash("/agent cancel side-abc123"),
+            Some(SlashCommand::AgentCancel("side-abc123".into())),
+        );
+    }
+
+    #[test]
+    fn parse_slash_agent_cancel_no_id_errors() {
+        match parse_slash("/agent cancel") {
+            Some(SlashCommand::Unknown(msg)) => {
+                assert!(msg.contains("usage: /agent cancel"), "got: {msg}");
+            }
+            other => panic!("expected Unknown, got {other:?}"),
+        }
     }
 
     /// M6.28: resolve_session_alias precedence — user > title > id.

@@ -175,6 +175,48 @@ pub fn render_chat_dispatches(ev: &ViewEvent) -> Vec<String> {
             });
             vec![payload.to_string()]
         }
+        ViewEvent::SideChannelStart { id, agent_name } => vec![serde_json::json!({
+            "type": "chat_side_channel_start",
+            "id": id,
+            "agent_name": agent_name,
+        })
+        .to_string()],
+        ViewEvent::SideChannelTextDelta { id, text } => vec![serde_json::json!({
+            "type": "chat_side_channel_text_delta",
+            "id": id,
+            "text": text,
+        })
+        .to_string()],
+        ViewEvent::SideChannelToolCall {
+            id,
+            tool_name,
+            label,
+        } => vec![serde_json::json!({
+            "type": "chat_side_channel_tool_call",
+            "id": id,
+            "tool_name": tool_name,
+            "label": label,
+        })
+        .to_string()],
+        ViewEvent::SideChannelDone {
+            id,
+            agent_name,
+            duration_ms,
+            result_text,
+        } => vec![serde_json::json!({
+            "type": "chat_side_channel_done",
+            "id": id,
+            "agent_name": agent_name,
+            "duration_ms": duration_ms,
+            "result_text": result_text,
+        })
+        .to_string()],
+        ViewEvent::SideChannelError { id, error } => vec![serde_json::json!({
+            "type": "chat_side_channel_error",
+            "id": id,
+            "error": error,
+        })
+        .to_string()],
     }
 }
 
@@ -381,6 +423,37 @@ pub fn render_terminal_ansi(state: &mut TerminalRenderState, ev: &ViewEvent) -> 
         ViewEvent::GoalUpdate(_) => None,
         ViewEvent::PermissionModeChanged(_) => None,
         ViewEvent::PlanStalled { .. } => None,
+        // Side-channel events surface only on chat-shaped renderer.
+        // CLI REPL / terminal pane gets a one-line ANSI marker for
+        // start + done so users running thclaws --cli still see
+        // background-agent activity without a custom renderer. Text
+        // deltas and intermediate tool calls are dropped on terminal
+        // — too noisy without a separate panel.
+        ViewEvent::SideChannelStart { id, agent_name } => Some(format!(
+            "\r\n\x1b[2m[agent {agent_name} ({id}) — running in background]\x1b[0m\r\n"
+        )),
+        ViewEvent::SideChannelTextDelta { .. } => None,
+        ViewEvent::SideChannelToolCall { .. } => None,
+        ViewEvent::SideChannelDone {
+            id,
+            agent_name,
+            duration_ms,
+            result_text,
+        } => {
+            let secs = *duration_ms as f64 / 1000.0;
+            // Two-line emit: status header + result body. Result is
+            // displayed in dim italic so it's distinguishable from
+            // main agent's stream. Long results stay on a single
+            // panel — user can grep terminal scrollback.
+            let body = result_text.replace('\n', "\r\n");
+            Some(format!(
+                "\r\n\x1b[36m[agent {agent_name} ({id}) ✓ done in {secs:.2}s]\x1b[0m\r\n\
+                 \x1b[2;3m{body}\x1b[0m\r\n"
+            ))
+        }
+        ViewEvent::SideChannelError { id, error } => Some(format!(
+            "\r\n\x1b[31m[agent {id} ✗ {error}]\x1b[0m\r\n"
+        )),
     };
 
     match inner {

@@ -561,6 +561,7 @@ fn run_gui_inner(serve: Option<crate::server::ServeConfig>) {
                             "tool_name": req.tool_name,
                             "input": req.input,
                             "summary": req.summary,
+                            "originator": req.originator,
                         });
                         let _ = proxy_inner.send_event(UserEvent::Dispatch(payload.to_string()));
                     }
@@ -573,6 +574,7 @@ fn run_gui_inner(serve: Option<crate::server::ServeConfig>) {
                     "tool_name": req.tool_name,
                     "input": req.input,
                     "summary": req.summary,
+                    "originator": req.originator,
                 });
                 let _ = proxy_for_approval.send_event(UserEvent::Dispatch(payload.to_string()));
             }
