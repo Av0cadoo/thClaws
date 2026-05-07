@@ -1494,10 +1494,7 @@ mod tests {
         // Fake binary: ignores --print + the prompt, just echoes its
         // cwd to stdout and exits 0. This proves cwd was honored.
         let fake = tmp.path().join("fake-thclaws");
-        write_fake_executable(
-            &fake,
-            "#!/bin/sh\npwd; echo prompt-was: \"$2\"\nexit 7",
-        );
+        write_fake_executable(&fake, "#!/bin/sh\npwd; echo prompt-was: \"$2\"\nexit 7");
 
         // Use the tempdir as cwd; assert log captures pwd output.
         let work = tempfile::tempdir().unwrap();
